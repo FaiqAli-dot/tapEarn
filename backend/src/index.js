@@ -28,8 +28,50 @@ const tonClient = new TonClient({
   endpoint: process.env.TON_RPC_URL || 'https://toncenter.com/api/v2/jsonRPC'
 });
 
+// Check required environment variables
+if (!process.env.TELEGRAM_BOT_TOKEN || process.env.TELEGRAM_BOT_TOKEN === 'your_bot_token_here') {
+  console.error('❌ ERROR: TELEGRAM_BOT_TOKEN environment variable is not set or is using placeholder value!');
+  console.error('Please edit the .env file and replace "your_bot_token_here" with your actual bot token.');
+  console.error('');
+  console.error('To get a bot token:');
+  console.error('1. Open Telegram and search for @BotFather');
+  console.error('2. Send /newbot command');
+  console.error('3. Follow the instructions to create your bot');
+  console.error('4. Copy the token provided by BotFather');
+  console.error('5. Edit .env file and replace the placeholder');
+  console.error('');
+  process.exit(1);
+}
+
 // Telegram Bot setup
-const bot = new TelegramBot(process.env.TELEGRAM_BOT_TOKEN, { polling: true });
+let bot;
+try {
+  bot = new TelegramBot(process.env.TELEGRAM_BOT_TOKEN, { 
+    polling: true,
+    // Add error handling for polling
+    polling_error_timeout: 10,
+    polling_timeout: 10
+  });
+  
+  // Handle bot errors
+  bot.on('polling_error', (error) => {
+    console.error('🤖 Telegram Bot Polling Error:', error.message);
+    if (error.code === 'ETELEGRAM' && error.message.includes('404')) {
+      console.error('❌ Bot token is invalid or bot was deleted!');
+      console.error('Please check your TELEGRAM_BOT_TOKEN in the .env file');
+      console.error('Make sure you copied the entire token from BotFather');
+    }
+  });
+  
+  bot.on('error', (error) => {
+    console.error('🤖 Telegram Bot Error:', error.message);
+  });
+  
+  console.log('✅ Telegram Bot initialized successfully');
+} catch (error) {
+  console.error('❌ Failed to initialize Telegram Bot:', error.message);
+  process.exit(1);
+}
 
 // Game state storage (in production, use Redis or database)
 const gameStates = new Map();
