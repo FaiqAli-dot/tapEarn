@@ -1,0 +1,50 @@
+{
+  "name": "tap-earn-ton-app",
+  "version": "1.0.0",
+  "type": "module",
+  "description": "Telegram Mini App for tap-to-earn points game integrated with TON blockchain",
+  "main": "index.js",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview",
+    "deploy": "npm run build && node scripts/deploy.js"
+  },
+  "dependencies": {
+    "@tonconnect/sdk": "^3.3.0-beta.2",
+    "@tonconnect/ui": "^2.3.0-beta.2",
+    "@tonconnect/ui-react": "^2.3.0-beta.2",
+    "clsx": "^2.0.0",
+    "framer-motion": "^10.16.0",
+    "lucide-react": "^0.263.1",
+    "react": "^18.2.0",
+    "react-dom": "^18.2.0",
+    "react-router-dom": "^6.8.0",
+    "tailwind-merge": "^1.14.0",
+    "ton": "^13.9.0",
+    "ton-core": "^0.53.0",
+    "ton-crypto": "^3.2.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "@types/react": "^18.2.0",
+    "@types/react-dom": "^18.2.0",
+    "@vitejs/plugin-react": "^4.0.0",
+    "autoprefixer": "^10.4.14",
+    "postcss": "^8.4.24",
+    "tailwindcss": "^3.3.0",
+    "terser": "^5.43.1",
+    "typescript": "^5.0.0",
+    "vite": "^4.4.0"
+  },
+  "keywords": [
+    "telegram",
+    "mini-app",
+    "ton",
+    "blockchain",
+    "tap-to-earn",
+    "react"
+  ],
+  "author": "Your Name",
+  "license": "MIT"
+}

@@ -1,0 +1,81 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --border: 214.3 31.8% 91.4%;
+  --background: 0 0% 100%;
+  --foreground: 222.2 84% 4.9%;
+}
+
+@layer base {
+  * {
+    @apply border-gray-200;
+  }
+  
+  body {
+    @apply bg-background text-foreground font-telegram;
+    font-feature-settings: "rlig" 1, "calt" 1;
+  }
+  
+  /* Telegram Mini App specific styles */
+  .tg-app {
+    @apply min-h-screen bg-gradient-to-br from-blue-50 to-indigo-100;
+  }
+  
+  .tg-card {
+    @apply bg-white/80 backdrop-blur-sm border border-white/20 shadow-lg rounded-2xl;
+  }
+  
+  .tg-button {
+    @apply bg-gradient-to-r from-blue-500 to-indigo-600 text-white font-semibold py-3 px-6 rounded-xl shadow-lg hover:shadow-xl transition-all duration-200 active:scale-95;
+  }
+  
+  .tg-button-secondary {
+    @apply bg-white/90 text-gray-700 font-semibold py-3 px-6 rounded-xl shadow-md hover:shadow-lg transition-all duration-200 active:scale-95 border border-gray-200;
+  }
+}
+
+@layer components {
+  .tap-button {
+    @apply w-32 h-32 bg-gradient-to-br from-blue-400 to-indigo-600 rounded-full shadow-2xl hover:shadow-3xl transition-all duration-200 cursor-pointer flex items-center justify-center text-white text-2xl font-bold;
+  }
+  
+  .tap-button:active {
+    @apply scale-95 shadow-lg;
+  }
+  
+  .energy-bar {
+    @apply w-full h-3 bg-gray-200 rounded-full overflow-hidden;
+  }
+  
+  .energy-fill {
+    @apply h-full bg-gradient-to-r from-yellow-400 to-orange-500 transition-all duration-300 ease-out;
+  }
+  
+  .points-display {
+    @apply text-3xl font-bold bg-gradient-to-r from-purple-500 to-pink-500 bg-clip-text text-transparent;
+  }
+  
+  .nav-item {
+    @apply flex flex-col items-center justify-center py-2 px-3 rounded-lg transition-all duration-200;
+  }
+  
+  .nav-item.active {
+    @apply bg-blue-100 text-blue-600;
+  }
+  
+  .nav-item:not(.active) {
+    @apply text-gray-500 hover:text-gray-700 hover:bg-gray-100;
+  }
+}
+
+@layer utilities {
+  .text-shadow {
+    text-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+  }
+  
+  .shadow-3xl {
+    box-shadow: 0 35px 60px -12px rgba(0, 0, 0, 0.25);
+  }
+}

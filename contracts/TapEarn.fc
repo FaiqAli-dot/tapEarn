@@ -1,0 +1,398 @@
+;; TapEarn Smart Contract for TON Blockchain
+;; Handles points minting, upgrades, referrals, and token operations
+
+#include "imports/stdlib.fc";
+
+;; Contract storage structure
+;; storage::storage {
+;;   owner: MsgAddress;           ;; Contract owner address
+;;   total_supply: uint256;       ;; Total points supply
+;;   upgrade_prices: map(uint32, uint256); ;; Upgrade prices in TON
+;;   referral_bonus_rate: uint8;  ;; Referral bonus percentage (10 = 10%)
+;;   min_claim_amount: uint256;   ;; Minimum points to claim as tokens
+;;   jetton_master: MsgAddress;   ;; Jetton master contract address
+;;   users: map(uint256, user_data); ;; User data mapping
+;;   referrals: map(uint256, uint256); ;; Referral mapping (user_id -> referrer_id)
+;; }
+
+;; User data structure
+;; user_data::user_data {
+;;   points: uint256;             ;; User's points balance
+;;   tap_power: uint8;           ;; Tap power level (1-5)
+;;   offline_earning_rate: uint8; ;; Offline earning rate per hour
+;;   energy_regen_rate: uint8;    ;; Energy regeneration rate per second
+;;   total_earned: uint256;       ;; Total points earned lifetime
+;;   referral_count: uint32;      ;; Number of successful referrals
+;;   referral_earnings: uint256;  ;; Total referral bonus earned
+;;   last_active: uint64;         ;; Last activity timestamp
+;;   upgrades_purchased: uint32;  ;; Number of upgrades purchased
+;; }
+
+;; Message types
+const int op::claim_points = 1;           ;; Claim points as Jettons
+const int op::purchase_upgrade = 2;       ;; Purchase upgrade with TON
+const int op::register_referral = 3;      ;; Register referral relationship
+const int op::update_user_data = 4;       ;; Update user data from Telegram
+const int op::withdraw_ton = 5;           ;; Owner withdraw TON
+const int op::set_upgrade_price = 6;      ;; Owner set upgrade price
+const int op::set_jetton_master = 7;      ;; Owner set Jetton master
+
+;; Error codes
+const int error::invalid_op = 100;
+const int error::insufficient_balance = 101;
+const int error::invalid_upgrade = 102;
+const int error::unauthorized = 103;
+const int error::invalid_amount = 104;
+const int error::user_not_found = 105;
+
+;; Contract storage
+global int storage_schema;
+global slice owner_address;
+global uint256 total_supply;
+global cell upgrade_prices_dict;
+global int referral_bonus_rate;
+global uint256 min_claim_amount;
+global slice jetton_master_address;
+global cell users_dict;
+global cell referrals_dict;
+
+;; Load contract data
+() load_data() impure {
+    slice ds = get_data().begin_parse();
+    storage_schema = ds~load_uint(8);
+    owner_address = ds~load_msg_addr();
+    total_supply = ds~load_uint(256);
+    upgrade_prices_dict = ds~load_dict();
+    referral_bonus_rate = ds~load_uint(8);
+    min_claim_amount = ds~load_uint(256);
+    jetton_master_address = ds~load_msg_addr();
+    users_dict = ds~load_dict();
+    referrals_dict = ds~load_dict();
+}
+
+;; Save contract data
+() save_data() impure {
+    set_data(begin_cell()
+        .store_uint(storage_schema, 8)
+        .store_slice(owner_address)
+        .store_uint(total_supply, 256)
+        .store_dict(upgrade_prices_dict)
+        .store_uint(referral_bonus_rate, 8)
+        .store_uint(min_claim_amount, 256)
+        .store_slice(jetton_master_address)
+        .store_dict(users_dict)
+        .store_dict(referrals_dict)
+        .end_cell());
+}
+
+;; Get user data from dictionary
+(slice, slice, slice, slice, slice, slice, slice, slice, slice, slice) get_user_data(uint256 user_id) {
+    (int found, slice user_data) = users_dict.udict_get?(256, user_id);
+    if (~ found) {
+        return (null(), null(), null(), null(), null(), null(), null(), null(), null(), null());
+    }
+    
+    slice ds = user_data.begin_parse();
+    slice points = ds~load_uint(256);
+    slice tap_power = ds~load_uint(8);
+    slice offline_earning_rate = ds~load_uint(8);
+    slice energy_regen_rate = ds~load_uint(8);
+    slice total_earned = ds~load_uint(256);
+    slice referral_count = ds~load_uint(32);
+    slice referral_earnings = ds~load_uint(256);
+    slice last_active = ds~load_uint(64);
+    slice upgrades_purchased = ds~load_uint(32);
+    
+    return (points, tap_power, offline_earning_rate, energy_regen_rate, 
+            total_earned, referral_count, referral_earnings, last_active, upgrades_purchased);
+}
+
+;; Store user data to dictionary
+() set_user_data(uint256 user_id, uint256 points, uint8 tap_power, uint8 offline_earning_rate,
+                 uint8 energy_regen_rate, uint256 total_earned, uint32 referral_count,
+                 uint256 referral_earnings, uint64 last_active, uint32 upgrades_purchased) impure {
+    cell user_data = begin_cell()
+        .store_uint(points, 256)
+        .store_uint(tap_power, 8)
+        .store_uint(offline_earning_rate, 8)
+        .store_uint(energy_regen_rate, 8)
+        .store_uint(total_earned, 256)
+        .store_uint(referral_count, 32)
+        .store_uint(referral_earnings, 256)
+        .store_uint(last_active, 64)
+        .store_uint(upgrades_purchased, 32)
+        .end_cell();
+    
+    users_dict~set(256, user_id, user_data);
+}
+
+;; Get upgrade price
+uint256 get_upgrade_price(uint32 upgrade_type) {
+    (int found, slice price) = upgrade_prices_dict.udict_get?(32, upgrade_type);
+    if (~ found) {
+        return 0;
+    }
+    return price;
+}
+
+;; Set upgrade price (owner only)
+() set_upgrade_price(uint32 upgrade_type, uint256 price) impure {
+    throw_unless(error::unauthorized, equal_slices(sender_address(), owner_address));
+    upgrade_prices_dict~set(32, upgrade_type, price);
+}
+
+;; Purchase upgrade with TON
+() purchase_upgrade(uint256 user_id, uint32 upgrade_type) impure {
+    uint256 price = get_upgrade_price(upgrade_type);
+    throw_if(error::invalid_upgrade, price == 0);
+    
+    ;; Check if user has enough TON
+    uint256 user_balance = my_balance();
+    throw_if(error::insufficient_balance, user_balance < price);
+    
+    ;; Get current user data
+    (slice points, slice tap_power, slice offline_earning_rate, slice energy_regen_rate,
+     slice total_earned, slice referral_count, slice referral_earnings, slice last_active, slice upgrades_purchased) = get_user_data(user_id);
+    
+    if (points == null()) {
+        ;; Create new user if not exists
+        points = 0;
+        tap_power = 1;
+        offline_earning_rate = 4;
+        energy_regen_rate = 3;
+        total_earned = 0;
+        referral_count = 0;
+        referral_earnings = 0;
+        last_active = now();
+        upgrades_purchased = 0;
+    }
+    
+    ;; Apply upgrade effects
+    uint8 new_tap_power = tap_power;
+    uint8 new_offline_earning_rate = offline_earning_rate;
+    uint8 new_energy_regen_rate = energy_regen_rate;
+    
+    if (upgrade_type == 1) { ;; Tap Power
+        new_tap_power = min(tap_power + 1, 5);
+    } elseif (upgrade_type == 2) { ;; Offline Earning
+        new_offline_earning_rate = min(offline_earning_rate + 4, 20);
+    } elseif (upgrade_type == 3) { ;; Energy Regen
+        new_energy_regen_rate = min(energy_regen_rate + 1, 10);
+    }
+    
+    ;; Update user data
+    set_user_data(user_id, points, new_tap_power, new_offline_earning_rate,
+                  new_energy_regen_rate, total_earned, referral_count,
+                  referral_earnings, last_active, upgrades_purchased + 1);
+    
+    ;; Transfer TON to owner
+    var msg = begin_cell()
+        .store_uint(0x18, 6)
+        .store_slice(owner_address)
+        .store_coins(price)
+        .store_uint(0, 1 + 4 + 4 + 64 + 32 + 1 + 1)
+        .end_cell();
+    
+    send_raw_message(msg, 1);
+}
+
+;; Register referral relationship
+() register_referral(uint256 user_id, uint256 referrer_id) impure {
+    ;; Check if referrer exists
+    (int found, slice _) = users_dict.udict_get?(256, referrer_id);
+    throw_if(error::user_not_found, ~ found);
+    
+    ;; Check if user already has referrer
+    (int ref_found, slice existing_ref) = referrals_dict.udict_get?(256, user_id);
+    throw_if(error::invalid_op, ref_found);
+    
+    ;; Set referral relationship
+    referrals_dict~set(256, user_id, referrer_id);
+    
+    ;; Update referrer's referral count
+    (slice points, slice tap_power, slice offline_earning_rate, slice energy_regen_rate,
+     slice total_earned, slice referral_count, slice referral_earnings, slice last_active, slice upgrades_purchased) = get_user_data(referrer_id);
+    
+    set_user_data(referrer_id, points, tap_power, offline_earning_rate,
+                  energy_regen_rate, total_earned, referral_count + 1,
+                  referral_earnings, last_active, upgrades_purchased);
+}
+
+;; Add referral bonus to referrer
+() add_referral_bonus(uint256 referrer_id, uint256 bonus_amount) impure {
+    (slice points, slice tap_power, slice offline_earning_rate, slice energy_regen_rate,
+     slice total_earned, slice referral_count, slice referral_earnings, slice last_active, slice upgrades_purchased) = get_user_data(referrer_id);
+    
+    uint256 new_referral_earnings = referral_earnings + bonus_amount;
+    uint256 new_total_earned = total_earned + bonus_amount;
+    
+    set_user_data(referrer_id, points, tap_power, offline_earning_rate,
+                  energy_regen_rate, new_total_earned, referral_count,
+                  new_referral_earnings, last_active, upgrades_purchased);
+}
+
+;; Claim points as Jettons
+() claim_points(uint256 user_id, uint256 amount) impure {
+    throw_if(error::invalid_amount, amount < min_claim_amount);
+    
+    ;; Get user data
+    (slice points, slice tap_power, slice offline_earning_rate, slice energy_regen_rate,
+     slice total_earned, slice referral_count, slice referral_earnings, slice last_active, slice upgrades_purchased) = get_user_data(user_id);
+    
+    throw_if(error::insufficient_balance, points < amount);
+    
+    ;; Update user points
+    uint256 new_points = points - amount;
+    set_user_data(user_id, new_points, tap_power, offline_earning_rate,
+                  energy_regen_rate, total_earned, referral_count,
+                  referral_earnings, last_active, upgrades_purchased);
+    
+    ;; Mint Jettons to user
+    cell msg_body = begin_cell()
+        .store_uint(0xf8a7ea5, 32)  ;; op::mint_tokens
+        .store_uint(0, 64)           ;; query_id
+        .store_uint(amount, 256)     ;; amount
+        .store_slice(sender_address()) ;; destination
+        .store_coins(0)              ;; forward_ton_amount
+        .store_slice(null())         ;; forward_payload
+        .end_cell();
+    
+    var msg = begin_cell()
+        .store_uint(0x18, 6)
+        .store_slice(jetton_master_address)
+        .store_coins(0)
+        .store_uint(0, 1 + 4 + 4 + 64 + 32 + 1 + 1)
+        .store_ref(msg_body)
+        .end_cell();
+    
+    send_raw_message(msg, 1);
+}
+
+;; Update user data from Telegram
+() update_user_data(uint256 user_id, uint256 points, uint8 tap_power, uint8 offline_earning_rate,
+                    uint8 energy_regen_rate, uint256 total_earned, uint32 referral_count,
+                    uint256 referral_earnings, uint64 last_active, uint32 upgrades_purchased) impure {
+    set_user_data(user_id, points, tap_power, offline_earning_rate,
+                  energy_regen_rate, total_earned, referral_count,
+                  referral_earnings, last_active, upgrades_purchased);
+}
+
+;; Withdraw TON (owner only)
+() withdraw_ton(uint256 amount) impure {
+    throw_unless(error::unauthorized, equal_slices(sender_address(), owner_address));
+    throw_if(error::invalid_amount, amount > my_balance());
+    
+    var msg = begin_cell()
+        .store_uint(0x18, 6)
+        .store_slice(owner_address)
+        .store_coins(amount)
+        .store_uint(0, 1 + 4 + 4 + 64 + 32 + 1 + 1)
+        .end_cell();
+    
+    send_raw_message(msg, 1);
+}
+
+;; Set Jetton master address (owner only)
+() set_jetton_master(slice new_jetton_master) impure {
+    throw_unless(error::unauthorized, equal_slices(sender_address(), owner_address));
+    jetton_master_address = new_jetton_master;
+}
+
+;; Main entry point
+() recv_internal(int msg_value, cell in_msg_full, slice in_msg_body) impure {
+    slice cs = in_msg_full.begin_parse();
+    int flags = cs~load_uint(4);
+    if (flags & 1) { ;; Ignore bounced messages
+        return ();
+    }
+    slice sender_address = cs~load_msg_addr();
+    int op = in_msg_body~load_uint(32);
+    
+    load_data();
+    
+    if (op == op::claim_points) {
+        uint256 user_id = in_msg_body~load_uint(256);
+        uint256 amount = in_msg_body~load_uint(256);
+        claim_points(user_id, amount);
+    } elseif (op == op::purchase_upgrade) {
+        uint256 user_id = in_msg_body~load_uint(256);
+        uint32 upgrade_type = in_msg_body~load_uint(32);
+        purchase_upgrade(user_id, upgrade_type);
+    } elseif (op == op::register_referral) {
+        uint256 user_id = in_msg_body~load_uint(256);
+        uint256 referrer_id = in_msg_body~load_uint(256);
+        register_referral(user_id, referrer_id);
+    } elseif (op == op::update_user_data) {
+        uint256 user_id = in_msg_body~load_uint(256);
+        uint256 points = in_msg_body~load_uint(256);
+        uint8 tap_power = in_msg_body~load_uint(8);
+        uint8 offline_earning_rate = in_msg_body~load_uint(8);
+        uint8 energy_regen_rate = in_msg_body~load_uint(8);
+        uint256 total_earned = in_msg_body~load_uint(256);
+        uint32 referral_count = in_msg_body~load_uint(32);
+        uint256 referral_earnings = in_msg_body~load_uint(256);
+        uint64 last_active = in_msg_body~load_uint(64);
+        uint32 upgrades_purchased = in_msg_body~load_uint(32);
+        
+        update_user_data(user_id, points, tap_power, offline_earning_rate,
+                        energy_regen_rate, total_earned, referral_count,
+                        referral_earnings, last_active, upgrades_purchased);
+    } elseif (op == op::withdraw_ton) {
+        uint256 amount = in_msg_body~load_uint(256);
+        withdraw_ton(amount);
+    } elseif (op == op::set_upgrade_price) {
+        uint32 upgrade_type = in_msg_body~load_uint(32);
+        uint256 price = in_msg_body~load_uint(256);
+        set_upgrade_price(upgrade_type, price);
+    } elseif (op == op::set_jetton_master) {
+        slice new_jetton_master = in_msg_body~load_msg_addr();
+        set_jetton_master(new_jetton_master);
+    } else {
+        throw(error::invalid_op);
+    }
+    
+    save_data();
+}
+
+;; Get methods for reading contract state
+int get_user_points(uint256 user_id) method_id {
+    load_data();
+    (slice points, _, _, _, _, _, _, _, _, _) = get_user_data(user_id);
+    if (points == null()) {
+        return 0;
+    }
+    return points;
+}
+
+int get_user_tap_power(uint256 user_id) method_id {
+    load_data();
+    (_, slice tap_power, _, _, _, _, _, _, _, _) = get_user_data(user_id);
+    if (tap_power == null()) {
+        return 1;
+    }
+    return tap_power;
+}
+
+int get_user_referral_count(uint256 user_id) method_id {
+    load_data();
+    (_, _, _, _, _, slice referral_count, _, _, _, _) = get_user_data(user_id);
+    if (referral_count == null()) {
+        return 0;
+    }
+    return referral_count;
+}
+
+int get_upgrade_price_method(uint32 upgrade_type) method_id {
+    load_data();
+    return get_upgrade_price(upgrade_type);
+}
+
+slice get_owner_address() method_id {
+    load_data();
+    return owner_address;
+}
+
+slice get_jetton_master() method_id {
+    load_data();
+    return jetton_master_address;
+}
