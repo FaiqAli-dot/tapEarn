@@ -17,16 +17,65 @@ import TopBar from './components/TopBar'
 // Hooks
 import { useGameState } from './hooks/useGameState'
 import { useTelegram } from './hooks/useTelegram'
+import { apiService } from './services/api'
 
 // Types
 import { GameState } from './types/game'
+
+// Import default game state
+const DEFAULT_GAME_STATE = {
+  points: 0,
+  energy: 1000,
+  maxEnergy: 1000,
+  energyRegenRate: 3,
+  tapPower: 1,
+  offlineEarningRate: 4,
+  offlineEarningMaxHours: 4,
+  totalTaps: 0,
+  totalPointsEarned: 0,
+  offlineEarnings: 0,
+  referralEarnings: 0,
+  lastActive: Date.now(),
+  dailyTasks: [],
+  lastDailyReset: Date.now(),
+  referralCode: '',
+  referralCount: 0,
+  walletConnected: false
+}
 
 function App() {
   const location = useLocation()
   const address = useTonAddress()
   const connected = !!address
   const { user } = useTelegram()
-  const { gameState, updateGameState } = useGameState()
+  
+  // Get user ID from URL or Telegram user, and store it in state to persist across navigation
+  const [currentUserId, setCurrentUserId] = useState<string | null>(null)
+  const [currentStartParam, setCurrentStartParam] = useState<string | null>(null)
+  
+  useEffect(() => {
+    const urlParams = new URLSearchParams(window.location.search)
+    const urlUserId = urlParams.get('userId')
+    const startParam = urlParams.get('start')
+    // Prioritize URL parameter over Telegram user ID for local development
+    const telegramUserId = urlUserId || user?.id?.toString()
+    
+    // Only update if we have a new user ID
+    if (telegramUserId && telegramUserId !== currentUserId) {
+      console.log(`🔍 URL User ID: ${urlUserId}, Telegram User ID: ${user?.id}, Final User ID: ${telegramUserId}`)
+      setCurrentUserId(telegramUserId)
+    }
+    
+    // Store startParam for later use
+    if (startParam !== currentStartParam) {
+      setCurrentStartParam(startParam)
+    }
+  }, [user?.id, currentUserId, currentStartParam])
+  
+  // Use the stored user ID
+  const telegramUserId = currentUserId
+  
+  const { gameState, updateGameState, tap, completeDailyTask, purchaseUpgrade, setWalletConnection } = useGameState(telegramUserId || undefined)
   
   const [isLoading, setIsLoading] = useState(true)
 
@@ -34,49 +83,97 @@ function App() {
     // Initialize game state
     const initGame = async () => {
       try {
-        // Load saved game state from localStorage or Telegram storage
-        const savedState = localStorage.getItem('tapEarnGameState')
-        if (savedState) {
-          const parsedState = JSON.parse(savedState)
-          updateGameState(parsedState)
+        if (!telegramUserId) {
+          console.error('No user ID available from Telegram or URL')
+          setIsLoading(false)
+          return
         }
-        
-        // Calculate offline earnings
-        if (gameState.lastActive) {
+
+        // Set user ID in API service
+        apiService.setUserId(telegramUserId)
+        console.log(`🔗 Frontend: Setting user ID to ${telegramUserId}`)
+
+        try {
+          // Initialize user with backend
+          const initResult = await apiService.initUser(telegramUserId, {
+            username: user?.username || 'localuser',
+            firstName: user?.firstName || 'Local',
+            lastName: user?.lastName || 'User',
+            startParam: currentStartParam
+          })
+          console.log(`✅ Frontend: User initialized - ${telegramUserId}`)
+
+          // Get game state from backend
+          const gameStateResult = await apiService.getGameState()
+          const backendGameState = gameStateResult.data
+          console.log(`📊 Frontend: Got game state for ${telegramUserId} - Points: ${backendGameState.points}, Energy: ${backendGameState.energy}`)
+
+          // Calculate offline earnings
           const now = Date.now()
-          const timeDiff = now - gameState.lastActive
-          const hoursOffline = Math.min(timeDiff / (1000 * 60 * 60), gameState.offlineEarningMaxHours)
+          const timeDiff = now - backendGameState.lastActive
+          const hoursOffline = Math.min(timeDiff / (1000 * 60 * 60), backendGameState.offlineEarningMaxHours)
+          
+          let finalState = { ...backendGameState, lastActive: now }
           
           if (hoursOffline > 0) {
-            const offlinePoints = Math.floor(hoursOffline * gameState.offlineEarningRate)
+            const offlinePoints = Math.floor(hoursOffline * backendGameState.offlineEarningRate)
             if (offlinePoints > 0) {
-              updateGameState({
-                ...gameState,
-                points: gameState.points + offlinePoints,
-                lastActive: now,
-                offlineEarnings: gameState.offlineEarnings + offlinePoints
-              })
+              finalState = {
+                ...finalState,
+                points: backendGameState.points + offlinePoints,
+                offlineEarnings: backendGameState.offlineEarnings + offlinePoints
+              }
             }
           }
+          
+          updateGameState(finalState)
+        } catch (backendError) {
+          console.error('Backend not available, using local storage:', backendError)
+          // Fallback to localStorage if backend fails - make it user-specific
+          const savedState = localStorage.getItem(`tapEarnGameState_${telegramUserId}`)
+          if (savedState) {
+            const parsedState = JSON.parse(savedState)
+            console.log(`💾 Frontend: Loading from localStorage for ${telegramUserId} - Points: ${parsedState.points}`)
+            updateGameState(parsedState)
+          } else {
+            // Create a new user state for local development
+            const newUserState = {
+              ...DEFAULT_GAME_STATE,
+              lastActive: Date.now(),
+              referralCode: Math.random().toString(36).substring(2, 8).toUpperCase()
+            }
+            console.log(`🆕 Frontend: Creating new local state for ${telegramUserId} - Points: ${newUserState.points}`)
+            updateGameState(newUserState)
+          }
         }
-        
-        updateGameState({ lastActive: Date.now() })
-      } catch (error) {
-        console.error('Failed to initialize game:', error)
-      } finally {
-        setIsLoading(false)
-      }
+              } catch (error) {
+          console.error('Failed to initialize game:', error)
+          // Final fallback - also user-specific
+          const newUserState = {
+            ...DEFAULT_GAME_STATE,
+            lastActive: Date.now(),
+            referralCode: Math.random().toString(36).substring(2, 8).toUpperCase()
+          }
+          updateGameState(newUserState)
+        } finally {
+          setIsLoading(false)
+        }
     }
 
     initGame()
-  }, [])
+  }, [telegramUserId]) // Only depend on telegramUserId, not updateGameState or user
 
-  // Save game state to localStorage whenever it changes
+  // Save game state to localStorage whenever it changes - make it user-specific
   useEffect(() => {
-    if (!isLoading) {
-      localStorage.setItem('tapEarnGameState', JSON.stringify(gameState))
+    if (!isLoading && gameState && telegramUserId) {
+      // Debounce localStorage saves to prevent excessive writes
+      const timeoutId = setTimeout(() => {
+        localStorage.setItem(`tapEarnGameState_${telegramUserId}`, JSON.stringify(gameState))
+      }, 1000) // Save after 1 second of no changes
+
+      return () => clearTimeout(timeoutId)
     }
-  }, [gameState, isLoading])
+  }, [gameState, isLoading, telegramUserId])
 
   if (isLoading) {
     return (
@@ -109,7 +206,7 @@ function App() {
                   exit={{ opacity: 0, y: -20 }}
                   transition={{ duration: 0.3 }}
                 >
-                  <HomeScreen />
+                  <HomeScreen gameState={gameState} onTap={tap} />
                 </motion.div>
               } 
             />
@@ -122,7 +219,11 @@ function App() {
                   exit={{ opacity: 0, y: -20 }}
                   transition={{ duration: 0.3 }}
                 >
-                  <DailyEarnUpgradesScreen />
+                  <DailyEarnUpgradesScreen 
+                    gameState={gameState}
+                    onCompleteDailyTask={completeDailyTask}
+                    onPurchaseUpgrade={purchaseUpgrade}
+                  />
                 </motion.div>
               } 
             />
@@ -135,7 +236,7 @@ function App() {
                   exit={{ opacity: 0, y: -20 }}
                   transition={{ duration: 0.3 }}
                 >
-                  <ProfileScreen />
+                  <ProfileScreen gameState={gameState} />
                 </motion.div>
               } 
             />
@@ -148,7 +249,10 @@ function App() {
                   exit={{ opacity: 0, y: -20 }}
                   transition={{ duration: 0.3 }}
                 >
-                  <ConnectWalletScreen />
+                  <ConnectWalletScreen 
+                    gameState={gameState}
+                    onSetWalletConnection={setWalletConnection}
+                  />
                 </motion.div>
               } 
             />
@@ -161,7 +265,7 @@ function App() {
                   exit={{ opacity: 0, y: -20 }}
                   transition={{ duration: 0.3 }}
                 >
-                  <InviteFriendsScreen />
+                  <InviteFriendsScreen gameState={gameState} />
                 </motion.div>
               } 
             />

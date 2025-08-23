@@ -1,7 +1,7 @@
 import React, { useState } from 'react'
 import { motion } from 'framer-motion'
-import { useGameState } from '../hooks/useGameState'
 import { useTelegram } from '../hooks/useTelegram'
+import { GameState } from '../types/game'
 import { 
   User, 
   Trophy, 
@@ -15,8 +15,11 @@ import {
   Check
 } from 'lucide-react'
 
-const ProfileScreen: React.FC = () => {
-  const { gameState } = useGameState()
+interface ProfileScreenProps {
+  gameState: GameState
+}
+
+const ProfileScreen: React.FC<ProfileScreenProps> = ({ gameState }) => {
   const { user, hapticFeedback, showConfirm } = useTelegram()
   const [isEditing, setIsEditing] = useState(false)
   const [customName, setCustomName] = useState(user?.firstName || '')

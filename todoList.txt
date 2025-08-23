@@ -1,0 +1,13 @@
+////checks
+once a user is registered, there shouldnt be any way that his data will be over written.
+
+
+
+////toDo
+inside daily reward video watch panel. a code needed to be written to get the reward. reason is so the user has to watch the video.
+virtual keyboard functionality.
+make user referral system
+test app on telegram
+make the contract(details of contract are inside my head)
+write a complete documentation.
+

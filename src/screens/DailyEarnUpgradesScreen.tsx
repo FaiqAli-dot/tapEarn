@@ -1,7 +1,7 @@
 import React, { useState } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
-import { useGameState } from '../hooks/useGameState'
 import { useTelegram } from '../hooks/useTelegram'
+import { GameState } from '../types/game'
 import { 
   Calendar, 
   Zap, 
@@ -14,14 +14,23 @@ import {
   Star
 } from 'lucide-react'
 
-const DailyEarnUpgradesScreen: React.FC = () => {
-  const { gameState, completeDailyTask, purchaseUpgrade } = useGameState()
+interface DailyEarnUpgradesScreenProps {
+  gameState: GameState
+  onCompleteDailyTask: (taskId: string) => void
+  onPurchaseUpgrade: (upgradeId: string, cost: number, costType: 'points' | 'ton') => void
+}
+
+const DailyEarnUpgradesScreen: React.FC<DailyEarnUpgradesScreenProps> = ({ 
+  gameState, 
+  onCompleteDailyTask, 
+  onPurchaseUpgrade 
+}) => {
   const { openLink, hapticFeedback, showConfirm } = useTelegram()
   const [activeTab, setActiveTab] = useState<'daily' | 'upgrades'>('daily')
 
   const handleTaskComplete = async (taskId: string) => {
     hapticFeedback('light')
-    completeDailyTask(taskId)
+    onCompleteDailyTask(taskId)
   }
 
   const handleUpgradePurchase = async (upgradeId: string, cost: number, costType: 'points' | 'ton') => {
@@ -35,7 +44,7 @@ const DailyEarnUpgradesScreen: React.FC = () => {
 
     if (confirmed) {
       hapticFeedback('medium')
-      purchaseUpgrade(upgradeId, cost, costType)
+      onPurchaseUpgrade(upgradeId, cost, costType)
     }
   }
 

@@ -1,8 +1,8 @@
 import React, { useState, useEffect } from 'react'
 import { motion } from 'framer-motion'
 import { useTonConnectUI, useTonAddress, useTonWallet } from '@tonconnect/ui-react'
-import { useGameState } from '../hooks/useGameState'
 import { useTelegram } from '../hooks/useTelegram'
+import { GameState } from '../types/game'
 import { 
   Wallet, 
   Copy, 
@@ -14,11 +14,15 @@ import {
   AlertCircle
 } from 'lucide-react'
 
-const ConnectWalletScreen: React.FC = () => {
+interface ConnectWalletScreenProps {
+  gameState: GameState
+  onSetWalletConnection: (connected: boolean, address?: string) => void
+}
+
+const ConnectWalletScreen: React.FC<ConnectWalletScreenProps> = ({ gameState, onSetWalletConnection }) => {
   const [tonConnectUI] = useTonConnectUI()
   const address = useTonAddress()
   const wallet = useTonWallet()
-  const { gameState, setWalletConnection } = useGameState()
   const { hapticFeedback, showAlert, showConfirm } = useTelegram()
   const [isConnecting, setIsConnecting] = useState(false)
   const [copied, setCopied] = useState(false)
@@ -28,11 +32,11 @@ const ConnectWalletScreen: React.FC = () => {
 
   useEffect(() => {
     if (connected && address) {
-      setWalletConnection(true, address)
+      onSetWalletConnection(true, address)
     } else {
-      setWalletConnection(false)
+      onSetWalletConnection(false)
     }
-  }, [connected, address, setWalletConnection])
+  }, [connected, address, onSetWalletConnection])
 
   const handleConnect = async () => {
     try {

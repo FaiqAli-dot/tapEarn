@@ -1,7 +1,7 @@
 import React, { useState } from 'react'
 import { motion } from 'framer-motion'
-import { useGameState } from '../hooks/useGameState'
 import { useTelegram } from '../hooks/useTelegram'
+import { GameState } from '../types/game'
 import { 
   Share2, 
   Copy, 
@@ -16,8 +16,11 @@ import {
   User
 } from 'lucide-react'
 
-const InviteFriendsScreen: React.FC = () => {
-  const { gameState } = useGameState()
+interface InviteFriendsScreenProps {
+  gameState: GameState
+}
+
+const InviteFriendsScreen: React.FC<InviteFriendsScreenProps> = ({ gameState }) => {
   const { user, hapticFeedback, openTelegramLink, showAlert } = useTelegram()
   const [copied, setCopied] = useState(false)
   const [shareMethod, setShareMethod] = useState<'telegram' | 'whatsapp' | 'copy' | null>(null)

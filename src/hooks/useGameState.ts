@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback } from 'react'
 import { GameState, DailyTask } from '../types/game'
+import { apiService } from '../services/api'
 
 const DEFAULT_GAME_STATE: GameState = {
   // Core game state
@@ -58,31 +59,48 @@ const DEFAULT_GAME_STATE: GameState = {
   walletConnected: false
 }
 
-export const useGameState = () => {
+export const useGameState = (userId?: string) => {
+  console.log(`🎮 useGameState initialized for user: ${userId}`)
   const [gameState, setGameState] = useState<GameState>(DEFAULT_GAME_STATE)
   const [energyTimer, setEnergyTimer] = useState<NodeJS.Timeout | null>(null)
+  const [isInitialized, setIsInitialized] = useState(false)
 
-  // Generate referral code
+  // Reset state when user ID changes
   useEffect(() => {
-    if (!gameState.referralCode) {
+    console.log(`🔄 Resetting game state for user: ${userId}`)
+    setGameState(DEFAULT_GAME_STATE)
+    setIsInitialized(false)
+    
+    // Clear any existing localStorage data for this user to ensure fresh start
+    if (userId) {
+      localStorage.removeItem(`tapEarnGameState_${userId}`)
+    }
+  }, [userId])
+
+  // Generate referral code only if not already set
+  useEffect(() => {
+    if (!gameState.referralCode && isInitialized) {
       const code = Math.random().toString(36).substring(2, 8).toUpperCase()
       setGameState(prev => ({ ...prev, referralCode: code }))
     }
-  }, [gameState.referralCode])
+  }, [gameState.referralCode, isInitialized])
 
-  // Energy regeneration timer
+  // Energy regeneration timer - only run when initialized and not already at max energy
   useEffect(() => {
+    if (!isInitialized) return
+    
     if (energyTimer) {
       clearInterval(energyTimer)
     }
 
     const timer = setInterval(() => {
       setGameState(prev => {
-        if (prev.energy < prev.maxEnergy) {
-          const newEnergy = Math.min(prev.energy + prev.energyRegenRate, prev.maxEnergy)
-          return { ...prev, energy: newEnergy }
+        const currentState = prev || DEFAULT_GAME_STATE
+        if (currentState.energy < currentState.maxEnergy) {
+          const newEnergy = Math.min(currentState.energy + currentState.energyRegenRate, currentState.maxEnergy)
+          return { ...currentState, energy: newEnergy }
         }
-        return prev
+        return currentState
       })
     }, 1000)
 
@@ -91,136 +109,248 @@ export const useGameState = () => {
     return () => {
       if (timer) clearInterval(timer)
     }
-  }, [gameState.energyRegenRate, gameState.maxEnergy])
-
-  // Daily reset timer
-  useEffect(() => {
-    const now = Date.now()
-    const lastReset = new Date(gameState.lastDailyReset)
-    const nextReset = new Date(lastReset)
-    nextReset.setDate(nextReset.getDate() + 1)
-    nextReset.setHours(0, 0, 0, 0)
-
-    if (now >= nextReset.getTime()) {
-      resetDailyTasks()
-    }
-  }, [gameState.lastDailyReset])
+  }, [isInitialized]) // Only depend on isInitialized, not on gameState properties
 
   const resetDailyTasks = useCallback(() => {
-    setGameState(prev => ({
-      ...prev,
-      dailyTasks: prev.dailyTasks.map(task => ({ ...task, completed: false })),
-      lastDailyReset: Date.now()
-    }))
-  }, [])
-
-  const updateGameState = useCallback((updates: Partial<GameState>) => {
-    setGameState(prev => ({ ...prev, ...updates }))
-  }, [])
-
-  const tap = useCallback(() => {
     setGameState(prev => {
-      if (prev.energy <= 0) return prev
-
-      const pointsEarned = prev.tapPower
-      const newEnergy = prev.energy - 1
-      const newPoints = prev.points + pointsEarned
-      const newTotalTaps = prev.totalTaps + 1
-      const newTotalPointsEarned = prev.totalPointsEarned + pointsEarned
-
+      const currentState = prev || DEFAULT_GAME_STATE
       return {
-        ...prev,
-        energy: newEnergy,
-        points: newPoints,
-        totalTaps: newTotalTaps,
-        totalPointsEarned: newTotalPointsEarned,
-        lastActive: Date.now()
+        ...currentState,
+        dailyTasks: currentState.dailyTasks.map(task => ({ ...task, completed: false })),
+        lastDailyReset: Date.now()
       }
     })
   }, [])
 
-  const completeDailyTask = useCallback((taskId: string) => {
+  // Daily reset timer - only check once per minute
+  useEffect(() => {
+    if (!gameState?.lastDailyReset || !isInitialized) return
+    
+    const checkDailyReset = () => {
+      const now = Date.now()
+      const lastReset = new Date(gameState.lastDailyReset)
+      const nextReset = new Date(lastReset)
+      nextReset.setDate(nextReset.getDate() + 1)
+      nextReset.setHours(0, 0, 0, 0)
+
+      if (now >= nextReset.getTime()) {
+        resetDailyTasks()
+      }
+    }
+
+    // Check immediately
+    checkDailyReset()
+    
+    // Then check every minute instead of on every render
+    const timer = setInterval(checkDailyReset, 60000) // 60 seconds
+
+    return () => clearInterval(timer)
+  }, [gameState?.lastDailyReset, isInitialized]) // Only depend on lastDailyReset and isInitialized
+
+  const updateGameState = useCallback(async (updates: Partial<GameState>) => {
+    console.log(`🔄 Frontend: updateGameState called with updates:`, updates)
     setGameState(prev => {
-      const task = prev.dailyTasks.find(t => t.id === taskId)
-      if (!task || task.completed) return prev
-
-      const updatedTasks = prev.dailyTasks.map(t =>
-        t.id === taskId ? { ...t, completed: true, completedAt: Date.now() } : t
-      )
-
-      return {
-        ...prev,
-        dailyTasks: updatedTasks,
-        points: prev.points + task.points,
-        totalPointsEarned: prev.totalPointsEarned + task.points
+      const newState = { ...prev, ...updates }
+      // Ensure referral code is generated if not present
+      if (!newState.referralCode) {
+        newState.referralCode = Math.random().toString(36).substring(2, 8).toUpperCase()
       }
-    })
-  }, [])
-
-  const purchaseUpgrade = useCallback((upgradeId: string, cost: number, costType: 'points' | 'ton') => {
-    setGameState(prev => {
-      if (costType === 'points' && prev.points < cost) return prev
-
-      // Apply upgrade effects
-      let newState = { ...prev }
-      
-      if (upgradeId === 'tap_power') {
-        newState.tapPower = Math.min(prev.tapPower + 1, 5)
-      } else if (upgradeId === 'offline_earning') {
-        newState.offlineEarningRate = Math.min(prev.offlineEarningRate + 4, 20)
-      } else if (upgradeId === 'energy_regen') {
-        newState.energyRegenRate = Math.min(prev.energyRegenRate + 1, 10)
-      }
-
-      if (costType === 'points') {
-        newState.points = prev.points - cost
-      }
-
+      console.log(`🔄 Frontend: State updated - Points: ${newState.points}, Daily Tasks:`, newState.dailyTasks?.length || 0)
       return newState
     })
+    setIsInitialized(true)
+
+    // Sync with backend - use the updated state
+    try {
+      const updatedState = { ...(gameState || DEFAULT_GAME_STATE), ...updates }
+      console.log(`🔄 Frontend: Syncing state with backend - Points: ${updatedState.points}`)
+      await apiService.updateGameState(updatedState)
+    } catch (error) {
+      console.error('Failed to sync game state with backend:', error)
+    }
+  }, [gameState]) // Add gameState dependency back to ensure we have the latest state
+
+  const tap = useCallback(async () => {
+    try {
+      const result = await apiService.tap()
+      console.log(`🎯 Frontend: Tap result - Points: ${result.points}, Energy: ${result.energy}, Total Taps: ${result.totalTaps}`)
+      
+      setGameState(prev => {
+        const currentState = prev || DEFAULT_GAME_STATE
+        return {
+          ...currentState,
+          points: result.points,
+          energy: result.energy,
+          totalTaps: result.totalTaps,
+          lastActive: Date.now()
+        }
+      })
+    } catch (error) {
+      console.error('Tap failed:', error)
+      // Fallback to local state if API fails
+      setGameState(prev => {
+        const currentState = prev || DEFAULT_GAME_STATE
+        if (currentState.energy <= 0) return currentState
+
+        const pointsEarned = currentState.tapPower
+        const newEnergy = currentState.energy - 1
+        const newPoints = currentState.points + pointsEarned
+        const newTotalTaps = currentState.totalTaps + 1
+        const newTotalPointsEarned = currentState.totalPointsEarned + pointsEarned
+
+        return {
+          ...currentState,
+          energy: newEnergy,
+          points: newPoints,
+          totalTaps: newTotalTaps,
+          totalPointsEarned: newTotalPointsEarned,
+          lastActive: Date.now()
+        }
+      })
+    }
+  }, [])
+
+  const completeDailyTask = useCallback(async (taskId: string) => {
+    try {
+      console.log(`🎯 Frontend: Completing daily task ${taskId}`)
+      const result = await apiService.completeDailyTask(taskId)
+      console.log(`✅ Frontend: Daily task completed - Points: ${result.points}, Daily Tasks:`, result.dailyTasks)
+      
+      setGameState(prev => {
+        const currentState = prev || DEFAULT_GAME_STATE
+        
+        // Use the daily tasks from the backend response instead of updating locally
+        const newState = {
+          ...currentState,
+          dailyTasks: result.dailyTasks || currentState.dailyTasks,
+          points: result.points
+        }
+        
+        console.log(`🔄 Frontend: Updated state - Points: ${newState.points}, Daily Tasks:`, newState.dailyTasks)
+        return newState
+      })
+    } catch (error) {
+      console.error('Complete daily task failed:', error)
+      // Fallback to local state if API fails
+      setGameState(prev => {
+        const currentState = prev || DEFAULT_GAME_STATE
+        const task = currentState.dailyTasks.find(t => t.id === taskId)
+        if (!task || task.completed) return currentState
+
+        const updatedTasks = currentState.dailyTasks.map(t =>
+          t.id === taskId ? { ...t, completed: true, completedAt: Date.now() } : t
+        )
+
+        return {
+          ...currentState,
+          dailyTasks: updatedTasks,
+          points: currentState.points + task.points,
+          totalPointsEarned: currentState.totalPointsEarned + task.points
+        }
+      })
+    }
+  }, [])
+
+  const purchaseUpgrade = useCallback(async (upgradeId: string, cost: number, costType: 'points' | 'ton') => {
+    try {
+      if (costType === 'points') {
+        console.log(`🎯 Frontend: Purchasing upgrade ${upgradeId} for ${cost} points`)
+        const result = await apiService.purchaseUpgrade(upgradeId, cost)
+        console.log(`✅ Frontend: Upgrade purchased - Points: ${result.points}, Tap Power: ${result.tapPower}`)
+        
+        setGameState(prev => {
+          const currentState = prev || DEFAULT_GAME_STATE
+          // Apply upgrade effects
+          let newState = { ...currentState, points: result.points }
+          
+          if (upgradeId === 'tap_power') {
+            newState.tapPower = result.tapPower || Math.min(currentState.tapPower + 1, 5)
+          } else if (upgradeId === 'offline_earning') {
+            newState.offlineEarningRate = result.offlineEarningRate || Math.min(currentState.offlineEarningRate + 4, 20)
+          } else if (upgradeId === 'energy_regen') {
+            newState.energyRegenRate = result.energyRegenRate || Math.min(currentState.energyRegenRate + 1, 10)
+          }
+
+          console.log(`🔄 Frontend: Updated state after upgrade - Points: ${newState.points}, Tap Power: ${newState.tapPower}`)
+          return newState
+        })
+      }
+    } catch (error) {
+      console.error('Purchase upgrade failed:', error)
+      // Fallback to local state if API fails
+      setGameState(prev => {
+        const currentState = prev || DEFAULT_GAME_STATE
+        if (costType === 'points' && currentState.points < cost) return currentState
+
+        // Apply upgrade effects
+        let newState = { ...currentState }
+        
+        if (upgradeId === 'tap_power') {
+          newState.tapPower = Math.min(currentState.tapPower + 1, 5)
+        } else if (upgradeId === 'offline_earning') {
+          newState.offlineEarningRate = Math.min(currentState.offlineEarningRate + 4, 20)
+        } else if (upgradeId === 'energy_regen') {
+          newState.energyRegenRate = Math.min(currentState.energyRegenRate + 1, 10)
+        }
+
+        if (costType === 'points') {
+          newState.points = currentState.points - cost
+        }
+
+        return newState
+      })
+    }
   }, [])
 
   const addReferral = useCallback((referralData: { username: string; totalEarnings: number }) => {
     setGameState(prev => {
+      const currentState = prev || DEFAULT_GAME_STATE
       const bonus = Math.floor(referralData.totalEarnings * 0.1) // 10% bonus
       return {
-        ...prev,
-        referralCount: prev.referralCount + 1,
-        points: prev.points + bonus,
-        referralEarnings: prev.referralEarnings + bonus,
-        totalPointsEarned: prev.totalPointsEarned + bonus
+        ...currentState,
+        referralCount: currentState.referralCount + 1,
+        points: currentState.points + bonus,
+        referralEarnings: currentState.referralEarnings + bonus,
+        totalPointsEarned: currentState.totalPointsEarned + bonus
       }
     })
   }, [])
 
   const setWalletConnection = useCallback((connected: boolean, address?: string) => {
-    setGameState(prev => ({
-      ...prev,
-      walletConnected: connected,
-      walletAddress: address
-    }))
+    setGameState(prev => {
+      const currentState = prev || DEFAULT_GAME_STATE
+      return {
+        ...currentState,
+        walletConnected: connected,
+        walletAddress: address
+      }
+    })
   }, [])
 
   const calculateOfflineEarnings = useCallback(() => {
+    const currentState = gameState || DEFAULT_GAME_STATE
     const now = Date.now()
-    const timeDiff = now - gameState.lastActive
-    const hoursOffline = Math.min(timeDiff / (1000 * 60 * 60), gameState.offlineEarningMaxHours)
+    const timeDiff = now - (currentState.lastActive || now)
+    const hoursOffline = Math.min(timeDiff / (1000 * 60 * 60), currentState.offlineEarningMaxHours || 4)
     
     if (hoursOffline > 0) {
-      const offlinePoints = Math.floor(hoursOffline * gameState.offlineEarningRate)
+      const offlinePoints = Math.floor(hoursOffline * currentState.offlineEarningRate)
       if (offlinePoints > 0) {
-        setGameState(prev => ({
-          ...prev,
-          points: prev.points + offlinePoints,
-          offlineEarnings: prev.offlineEarnings + offlinePoints,
-          totalPointsEarned: prev.totalPointsEarned + offlinePoints,
-          lastActive: now
-        }))
+        setGameState(prev => {
+          const prevState = prev || DEFAULT_GAME_STATE
+          return {
+            ...prevState,
+            points: prevState.points + offlinePoints,
+            offlineEarnings: prevState.offlineEarnings + offlinePoints,
+            totalPointsEarned: prevState.totalPointsEarned + offlinePoints,
+            lastActive: now
+          }
+        })
         return offlinePoints
       }
     }
     return 0
-  }, [gameState.lastActive, gameState.offlineEarningMaxHours, gameState.offlineEarningRate])
+  }, [gameState?.lastActive, gameState?.offlineEarningMaxHours, gameState?.offlineEarningRate])
 
   return {
     gameState,

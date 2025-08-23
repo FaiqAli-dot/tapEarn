@@ -1,11 +1,15 @@
 import React, { useState, useEffect } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
-import { useGameState } from '../hooks/useGameState'
 import { useTelegram } from '../hooks/useTelegram'
 import { Zap, Coins, Battery } from 'lucide-react'
+import { GameState } from '../types/game'
 
-const HomeScreen: React.FC = () => {
-  const { gameState, tap } = useGameState()
+interface HomeScreenProps {
+  gameState: GameState
+  onTap: () => void
+}
+
+const HomeScreen: React.FC<HomeScreenProps> = ({ gameState, onTap }) => {
   const { hapticFeedback, notificationFeedback } = useTelegram()
   const [isTapping, setIsTapping] = useState(false)
   const [tapCount, setTapCount] = useState(0)
@@ -43,7 +47,7 @@ const HomeScreen: React.FC = () => {
     setTapCount(prev => prev + 1)
     
     // Perform tap action
-    tap()
+    onTap()
     
     // Reset tap animation
     setTimeout(() => setIsTapping(false), 100)
