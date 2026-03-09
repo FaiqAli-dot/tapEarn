@@ -1,0 +1,119 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Mobile Connection Test</title>
+    <style>
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+            max-width: 600px;
+            margin: 50px auto;
+            padding: 20px;
+            background: #f5f5f5;
+        }
+        .card {
+            background: white;
+            border-radius: 12px;
+            padding: 30px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+        }
+        h1 { color: #333; margin-top: 0; }
+        .status { 
+            padding: 15px;
+            border-radius: 8px;
+            margin: 20px 0;
+            font-weight: bold;
+        }
+        .success { background: #d4edda; color: #155724; border: 2px solid #c3e6cb; }
+        .error { background: #f8d7da; color: #721c24; border: 2px solid #f5c6cb; }
+        .info { background: #d1ecf1; color: #0c5460; border: 2px solid #bee5eb; }
+        button {
+            background: #007bff;
+            color: white;
+            border: none;
+            padding: 12px 24px;
+            border-radius: 6px;
+            font-size: 16px;
+            cursor: pointer;
+            margin: 10px 5px;
+        }
+        button:active { background: #0056b3; }
+        #results { margin-top: 20px; }
+        .loading { opacity: 0.6; }
+    </style>
+</head>
+<body>
+    <div class="card">
+        <h1>🎉 Connection Test</h1>
+        <div class="status success">
+            ✅ Frontend is accessible!<br>
+            You are connected to: <strong id="currentUrl"></strong>
+        </div>
+        
+        <div id="results"></div>
+        
+        <h3>Test Backend Connection:</h3>
+        <button onclick="testBackend()">Test Backend (Port 3001)</button>
+        <button onclick="testHealth()">Test Health Endpoint</button>
+    </div>
+
+    <script>
+        document.getElementById('currentUrl').textContent = window.location.hostname;
+        
+        async function testBackend() {
+            const resultsDiv = document.getElementById('results');
+            resultsDiv.innerHTML = '<div class="status info">Testing backend connection...</div>';
+            
+            try {
+                const response = await fetch('http://192.168.50.88:3001/health');
+                const data = await response.json();
+                
+                resultsDiv.innerHTML = `
+                    <div class="status success">
+                        ✅ Backend Connected!<br>
+                        Status: ${data.status}<br>
+                        Timestamp: ${new Date(data.timestamp).toLocaleString()}
+                    </div>
+                `;
+            } catch (error) {
+                resultsDiv.innerHTML = `
+                    <div class="status error">
+                        ❌ Backend Connection Failed<br>
+                        Error: ${error.message}<br><br>
+                        This likely means the firewall is blocking port 3001.
+                    </div>
+                `;
+            }
+        }
+        
+        async function testHealth() {
+            const resultsDiv = document.getElementById('results');
+            resultsDiv.innerHTML = '<div class="status info">Checking all endpoints...</div>';
+            
+            const tests = [
+                { name: 'Backend Health', url: 'http://192.168.50.88:3001/health' },
+                { name: 'Backend API', url: 'http://192.168.50.88:3001/api/users/init?userId=test' }
+            ];
+            
+            let html = '<h3>Test Results:</h3>';
+            
+            for (const test of tests) {
+                try {
+                    const response = await fetch(test.url);
+                    const status = response.ok ? '✅' : '⚠️';
+                    html += `<div class="status ${response.ok ? 'success' : 'error'}">${status} ${test.name}: ${response.status}</div>`;
+                } catch (error) {
+                    html += `<div class="status error">❌ ${test.name}: Failed (${error.message})</div>`;
+                }
+            }
+            
+            resultsDiv.innerHTML = html;
+        }
+        
+        // Auto-test on load
+        setTimeout(testBackend, 1000);
+    </script>
+</body>
+</html>
+

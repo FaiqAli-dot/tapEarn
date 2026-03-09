@@ -9,6 +9,8 @@ import DailyEarnUpgradesScreen from './screens/DailyEarnUpgradesScreen'
 import ProfileScreen from './screens/ProfileScreen'
 import ConnectWalletScreen from './screens/ConnectWalletScreen'
 import InviteFriendsScreen from './screens/InviteFriendsScreen'
+import VideoCodeAdmin from './components/VideoCodeAdmin'
+import ProtectedAdminRoute from './components/ProtectedAdminRoute'
 
 // Components
 import BottomNavigation from './components/BottomNavigation'
@@ -64,6 +66,8 @@ function App() {
     if (telegramUserId && telegramUserId !== currentUserId) {
       console.log(`🔍 URL User ID: ${urlUserId}, Telegram User ID: ${user?.id}, Final User ID: ${telegramUserId}`)
       setCurrentUserId(telegramUserId)
+      // Store user ID in localStorage for admin access
+      localStorage.setItem('current_user_id', telegramUserId)
     }
     
     // Store startParam for later use
@@ -75,7 +79,7 @@ function App() {
   // Use the stored user ID
   const telegramUserId = currentUserId
   
-  const { gameState, updateGameState, tap, completeDailyTask, purchaseUpgrade, setWalletConnection } = useGameState(telegramUserId || undefined)
+  const { gameState, updateGameState, tap, completeDailyTask, purchaseUpgrade, setWalletConnection, refreshGameState } = useGameState(telegramUserId || undefined)
   
   const [isLoading, setIsLoading] = useState(true)
 
@@ -175,6 +179,19 @@ function App() {
     }
   }, [gameState, isLoading, telegramUserId])
 
+  // Add refresh function to window for debugging
+  useEffect(() => {
+    if (typeof window !== 'undefined') {
+      (window as any).refreshGameState = refreshGameState
+      ;(window as any).logGameState = () => {
+        console.log('🎮 Current Game State:', gameState)
+        console.log('📋 Daily Tasks:', gameState?.dailyTasks)
+      }
+      console.log('🔄 Debug: Call window.refreshGameState() to force refresh from backend')
+      console.log('📊 Debug: Call window.logGameState() to see current state')
+    }
+  }, [refreshGameState, gameState])
+
   if (isLoading) {
     return (
       <div className="tg-app flex items-center justify-center">
@@ -267,6 +284,21 @@ function App() {
                 >
                   <InviteFriendsScreen gameState={gameState} />
                 </motion.div>
+              } 
+            />
+            <Route 
+              path="/admin/video-codes" 
+              element={
+                <ProtectedAdminRoute allowedUserIds={['123456789']}>
+                  <motion.div
+                    initial={{ opacity: 0, y: 20 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    exit={{ opacity: 0, y: -20 }}
+                    transition={{ duration: 0.3 }}
+                  >
+                    <VideoCodeAdmin />
+                  </motion.div>
+                </ProtectedAdminRoute>
               } 
             />
           </Routes>

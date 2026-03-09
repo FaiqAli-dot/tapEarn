@@ -6,6 +6,13 @@
   "main": "index.js",
   "scripts": {
     "dev": "vite",
+    "dev:backend": "cd backend && npm run dev",
+    "dev:frontend": "vite",
+    "dev:all": "concurrently \"npm run dev:backend\" \"npm run dev:frontend\"",
+    "start": "concurrently \"npm run dev:backend\" \"npm run dev:frontend\"",
+    "mobile": "node setup-mobile.js && npm start",
+    "stop": "pkill -f \"node src/index.js\" && pkill -f \"vite\" && echo \"Servers stopped\"",
+    "restart": "npm run stop && sleep 2 && npm run start",
     "build": "vite build",
     "preview": "vite preview",
     "deploy": "npm run build && node scripts/deploy.js"
@@ -31,6 +38,7 @@
     "@types/react-dom": "^18.2.0",
     "@vitejs/plugin-react": "^4.0.0",
     "autoprefixer": "^10.4.14",
+    "concurrently": "^8.2.2",
     "postcss": "^8.4.24",
     "tailwindcss": "^3.3.0",
     "terser": "^5.43.1",

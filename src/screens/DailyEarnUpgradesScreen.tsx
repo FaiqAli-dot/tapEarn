@@ -2,6 +2,8 @@ import React, { useState } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
 import { useTelegram } from '../hooks/useTelegram'
 import { GameState } from '../types/game'
+import VideoPlayer from '../components/VideoPlayer'
+import { apiService } from '../services/api'
 import { 
   Calendar, 
   Zap, 
@@ -27,6 +29,8 @@ const DailyEarnUpgradesScreen: React.FC<DailyEarnUpgradesScreenProps> = ({
 }) => {
   const { openLink, hapticFeedback, showConfirm } = useTelegram()
   const [activeTab, setActiveTab] = useState<'daily' | 'upgrades'>('daily')
+  const [isVideoPlayerOpen, setIsVideoPlayerOpen] = useState(false)
+  const [videoUrl, setVideoUrl] = useState('https://www.youtube.com/watch?v=dQw4w9WgXcQ')
 
   const handleTaskComplete = async (taskId: string) => {
     hapticFeedback('light')
@@ -48,12 +52,36 @@ const DailyEarnUpgradesScreen: React.FC<DailyEarnUpgradesScreenProps> = ({
     }
   }
 
-  const handleYouTubeTask = (url: string) => {
-    openLink(url, true)
-    // In a real app, you'd implement verification logic here
-    setTimeout(() => {
-      handleTaskComplete('watch_youtube')
-    }, 5000) // Simulate task completion after 5 seconds
+  const handleVideoTask = async () => {
+    hapticFeedback('light')
+    
+    // Fetch video URL from database - use the new video code
+    try {
+      const videoCode = await apiService.getVideoCode('watch video naa')
+      setVideoUrl(videoCode.videoUrl)
+    } catch (error) {
+      console.error('Failed to fetch video URL:', error)
+      // Fallback to old video if new one fails
+      try {
+        const fallbackVideoCode = await apiService.getVideoCode('watch_youtube')
+        setVideoUrl(fallbackVideoCode.videoUrl)
+      } catch (fallbackError) {
+        console.error('Failed to fetch fallback video URL:', fallbackError)
+        // Use default URL if both fail
+        setVideoUrl('https://www.youtube.com/watch?v=dQw4w9WgXcQ')
+      }
+    }
+    
+    setIsVideoPlayerOpen(true)
+  }
+
+  const handleVideoComplete = (videoId: string) => {
+    hapticFeedback('medium')
+    onCompleteDailyTask(videoId)
+  }
+
+  const handleVideoClose = () => {
+    setIsVideoPlayerOpen(false)
   }
 
   const upgrades = [
@@ -173,7 +201,7 @@ const DailyEarnUpgradesScreen: React.FC<DailyEarnUpgradesScreenProps> = ({
               </button>
             </div>
 
-            {/* YouTube Task */}
+            {/* Video Task */}
             <div className="tg-card p-4">
               <div className="flex items-center justify-between">
                 <div className="flex items-center space-x-3">
@@ -181,30 +209,30 @@ const DailyEarnUpgradesScreen: React.FC<DailyEarnUpgradesScreenProps> = ({
                     <Play className="w-5 h-5 text-red-600" />
                   </div>
                   <div>
-                    <h3 className="font-semibold text-gray-800">Watch YouTube Video</h3>
+                    <h3 className="font-semibold text-gray-800">Watch Video</h3>
                     <p className="text-sm text-gray-600">Watch our featured video</p>
                   </div>
                 </div>
                 <div className="text-right">
-                  <div className="text-lg font-bold text-red-600">+100</div>
+                  <div className="text-lg font-bold text-red-600">+150</div>
                   <div className="text-xs text-gray-500">points</div>
                 </div>
               </div>
               <button
-                onClick={() => handleYouTubeTask('https://youtube.com/watch?v=dQw4w9WgXcQ')}
-                disabled={gameState.dailyTasks.find(t => t.id === 'watch_youtube')?.completed}
+                onClick={handleVideoTask}
+                disabled={gameState.dailyTasks.find(t => t.id === 'watch video naa')?.completed}
                 className={`w-full mt-3 py-2 px-4 rounded-lg font-medium transition-all ${
-                  gameState.dailyTasks.find(t => t.id === 'watch_youtube')?.completed
+                  gameState.dailyTasks.find(t => t.id === 'watch video naa')?.completed
                     ? 'bg-green-100 text-green-700 cursor-not-allowed'
                     : 'bg-red-500 text-white hover:bg-red-600'
                 }`}
               >
-                {gameState.dailyTasks.find(t => t.id === 'watch_youtube')?.completed ? (
+                {gameState.dailyTasks.find(t => t.id === 'watch video naa')?.completed ? (
                   <CheckCircle className="w-4 h-4 inline mr-2" />
                 ) : (
                   <Play className="w-4 h-4 inline mr-2" />
                 )}
-                {gameState.dailyTasks.find(t => t.id === 'watch_youtube')?.completed ? 'Completed' : 'Watch Video'}
+                {gameState.dailyTasks.find(t => t.id === 'watch video naa')?.completed ? 'Completed' : 'Watch Video'}
               </button>
             </div>
 
@@ -318,6 +346,16 @@ const DailyEarnUpgradesScreen: React.FC<DailyEarnUpgradesScreenProps> = ({
           </motion.div>
         )}
       </AnimatePresence>
+
+      {isVideoPlayerOpen && (
+        <VideoPlayer
+          videoUrl={videoUrl}
+          videoId="watch video naa"
+          onVideoComplete={handleVideoComplete}
+          onClose={handleVideoClose}
+          isOpen={isVideoPlayerOpen}
+        />
+      )}
     </div>
   )
 }

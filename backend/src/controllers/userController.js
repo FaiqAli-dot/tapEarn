@@ -33,6 +33,17 @@ const getOrCreateUser = async (telegramId, userData = {}) => {
         );
       }
     } else {
+      // Check if daily tasks need to be reset (daily reset)
+      const now = new Date();
+      const lastReset = user.lastDailyReset ? new Date(user.lastDailyReset) : new Date(0);
+      const daysSinceReset = Math.floor((now - lastReset) / (1000 * 60 * 60 * 24));
+      
+      if (daysSinceReset >= 1) {
+        console.log(`🔄 RESETTING DAILY TASKS for user: ${telegramId} (${daysSinceReset} days since last reset)`);
+        user.resetDailyTasks();
+        await user.save();
+      }
+      
       // Ensure daily tasks are initialized for existing users too
       if (!user.dailyTasks || user.dailyTasks.length === 0) {
         console.log(`🔄 INITIALIZING DAILY TASKS for existing user: ${telegramId}`);
@@ -46,13 +57,13 @@ const getOrCreateUser = async (telegramId, userData = {}) => {
             type: 'login'
           },
           {
-            id: 'watch_youtube',
-            title: 'Watch YouTube Video',
+            id: 'watch video naa',
+            title: 'Watch Video',
             description: 'Watch our featured video',
-            points: 100,
+            points: 150,
             completed: false,
             type: 'youtube',
-            url: 'https://youtube.com/watch?v=dQw4w9WgXcQ'
+            url: 'https://www.youtube.com/watch?v=pmog2cABaJk&t=2595s&ab_channel=JamalRoomi'
           },
           {
             id: 'streak_bonus',
@@ -132,6 +143,56 @@ const handleTap = async (telegramId) => {
     };
   } catch (error) {
     console.error('Error in handleTap:', error);
+    throw error;
+  }
+};
+
+// Handle batched taps sync
+const syncTaps = async (telegramId, tapCount) => {
+  try {
+    const user = await User.findOne({ telegramId });
+    if (!user) throw new Error('User not found');
+    
+    // Validate tap count (rough anti-cheat)
+    // E.g., user can't tap more than their current max energy in one go, 
+    // and can't send absurd numbers
+    if (tapCount < 0) throw new Error('Invalid tap count');
+    if (tapCount > user.maxEnergy) {
+      console.warn(`⚠️ ANTI-CHEAT: User ${telegramId} sent ${tapCount} taps, exceeding max energy of ${user.maxEnergy}. Clamping to max energy.`);
+      tapCount = user.maxEnergy;
+    }
+    
+    // Check if user has enough energy for this batch
+    if (!user.useEnergy(tapCount)) {
+      // If they don't have enough current energy for the full batch, 
+      // just use whatever energy they have left
+      const currentEnergy = user.calculateCurrentEnergy();
+      if (currentEnergy > 0) {
+        tapCount = currentEnergy; // Clamp tap count to available energy
+        user.useEnergy(tapCount); // Now use exactly what they have
+      } else {
+        throw new Error('Not enough energy');
+      }
+    }
+    
+    // Add points based on tap power for the entire batch
+    const pointsEarned = tapCount * user.tapPower;
+    user.addPoints(pointsEarned);
+    user.totalTaps += tapCount;
+    
+    await user.save();
+    
+    console.log(`🎯 SYNC TAPS: User ${telegramId} synced ${tapCount} taps - Points: ${user.points}, Energy: ${user.energy}, Total Taps: ${user.totalTaps}`);
+    
+    return {
+      points: user.points,
+      energy: user.energy,
+      totalTaps: user.totalTaps,
+      pointsEarned,
+      syncedTaps: tapCount
+    };
+  } catch (error) {
+    console.error('Error in syncTaps:', error);
     throw error;
   }
 };
@@ -225,6 +286,17 @@ const getUserGameState = async (telegramId) => {
     const user = await User.findOne({ telegramId });
     if (!user) throw new Error('User not found');
     
+    // Check if daily tasks need to be reset (daily reset)
+    const now = new Date();
+    const lastReset = user.lastDailyReset ? new Date(user.lastDailyReset) : new Date(0);
+    const daysSinceReset = Math.floor((now - lastReset) / (1000 * 60 * 60 * 24));
+    
+    if (daysSinceReset >= 1) {
+      console.log(`🔄 RESETTING DAILY TASKS for user: ${telegramId} (${daysSinceReset} days since last reset)`);
+      user.resetDailyTasks();
+      await user.save();
+    }
+    
     // Calculate current energy
     const currentEnergy = user.calculateCurrentEnergy();
     
@@ -312,14 +384,43 @@ const resetDailyTasks = async (telegramId) => {
     const user = await User.findOne({ telegramId });
     if (!user) throw new Error('User not found');
     
-    const tasks = user.resetDailyTasks();
+    // Update daily tasks to use the new structure
+    user.dailyTasks = [
+      {
+        id: 'daily_login',
+        title: 'Daily Login',
+        description: 'Log in to earn bonus points',
+        points: 50,
+        completed: false,
+        type: 'login'
+      },
+      {
+        id: 'watch video naa',
+        title: 'Watch Video',
+        description: 'Watch our featured video',
+        points: 150,
+        completed: false,
+        type: 'youtube',
+        url: 'https://www.youtube.com/watch?v=pmog2cABaJk&t=2595s&ab_channel=JamalRoomi'
+      },
+      {
+        id: 'streak_bonus',
+        title: '7-Day Streak',
+        description: 'Maintain daily login for 7 days',
+        points: 500,
+        completed: false,
+        type: 'streak'
+      }
+    ];
+    
+    user.lastDailyReset = new Date();
     await user.save();
     
-    console.log(`🔄 RESET: User ${telegramId} daily tasks reset`);
+    console.log(`🔄 RESET: User ${telegramId} daily tasks updated to new structure`);
     
     return {
       success: true,
-      dailyTasks: tasks,
+      dailyTasks: user.dailyTasks,
       message: 'Daily tasks reset successfully'
     };
   } catch (error) {
@@ -352,5 +453,6 @@ export {
   updateUserGameState,
   getAvailableUpgrades,
   resetDailyTasks,
-  getLeaderboard
+  getLeaderboard,
+  syncTaps
 };

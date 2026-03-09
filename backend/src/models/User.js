@@ -94,13 +94,13 @@ userSchema.pre('save', async function(next) {
         type: 'login'
       },
       {
-        id: 'watch_youtube',
-        title: 'Watch YouTube Video',
+        id: 'watch video naa',
+        title: 'Watch Video',
         description: 'Watch our featured video',
-        points: 100,
+        points: 150,
         completed: false,
         type: 'youtube',
-        url: 'https://youtube.com/watch?v=dQw4w9WgXcQ'
+        url: 'https://www.youtube.com/watch?v=pmog2cABaJk&t=2595s&ab_channel=JamalRoomi'
       },
       {
         id: 'streak_bonus',

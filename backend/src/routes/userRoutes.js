@@ -10,7 +10,8 @@ import {
   updateUserGameState,
   getAvailableUpgrades,
   resetDailyTasks,
-  getLeaderboard 
+  getLeaderboard,
+  syncTaps
 } from '../controllers/userController.js';
 
 const router = express.Router();
@@ -60,6 +61,21 @@ router.get('/init', async (req, res) => {
 router.post('/tap', extractUserId, async (req, res) => {
   try {
     const result = await handleTap(req.userId);
+    res.json({ success: true, ...result });
+  } catch (error) {
+    res.status(400).json({ success: false, error: error.message });
+  }
+});
+
+// Handle batched taps sync
+router.post('/sync-taps', extractUserId, async (req, res) => {
+  try {
+    const { tapCount } = req.body;
+    if (tapCount === undefined || tapCount < 0) {
+      return res.status(400).json({ success: false, error: 'Valid tap count is required' });
+    }
+    
+    const result = await syncTaps(req.userId, tapCount);
     res.json({ success: true, ...result });
   } catch (error) {
     res.status(400).json({ success: false, error: error.message });
