@@ -15,9 +15,59 @@ dotenv.config();
 const app = express();
 const PORT = process.env.PORT || 3001;
 
-// Middleware
+// Always allow local frontend + GitHub Pages origin.
+// FRONTEND_URL is the Mini App URL (may include a path); CORS uses its origin only.
+// Development keeps allow-all so `npm run mobile` / LAN IPs still work.
+const DEFAULT_CORS_ORIGINS = [
+  'http://localhost:3000',
+  'http://127.0.0.1:3000',
+  'https://faiqali-dot.github.io',
+];
+
+function originFromUrl(value) {
+  if (!value) return null;
+  try {
+    return new URL(value).origin;
+  } catch {
+    return value.replace(/\/$/, '');
+  }
+}
+
+function getCorsAllowlist() {
+  const fromCorsEnv = (process.env.CORS_ORIGINS || '')
+    .split(',')
+    .map((s) => s.trim())
+    .filter(Boolean);
+  const frontendOrigin = originFromUrl(process.env.FRONTEND_URL);
+  return [...new Set([
+    ...DEFAULT_CORS_ORIGINS,
+    ...fromCorsEnv,
+    ...(frontendOrigin ? [frontendOrigin] : []),
+  ])];
+}
+
+const isDev = process.env.NODE_ENV !== 'production';
+
 app.use(cors({
-  origin: process.env.FRONTEND_URL || true,
+  origin: (origin, callback) => {
+    // Non-browser clients (curl, same-origin, server-to-server)
+    if (!origin) {
+      return callback(null, true);
+    }
+
+    // Existing development behavior: allow any origin (mobile LAN testing)
+    if (isDev) {
+      return callback(null, true);
+    }
+
+    const allowed = getCorsAllowlist();
+    if (allowed.includes(origin)) {
+      return callback(null, true);
+    }
+
+    console.warn(`CORS blocked origin: ${origin}`);
+    return callback(new Error('Not allowed by CORS'));
+  },
   credentials: true
 }));
 app.use(express.json());

@@ -1,6 +1,48 @@
-const API_BASE_URL = (import.meta as any).env?.VITE_API_BASE_URL || 'http://localhost:3001/api';
+const DEFAULT_API_BASE_URL =
+  (import.meta as any).env?.VITE_API_BASE_URL || 'http://localhost:3001/api';
 
 const SESSION_TOKEN_KEY = 'tapearn_session_token';
+const API_BASE_STORAGE_KEY = 'tapearn_api_base_url';
+
+/**
+ * Normalize an API base so callers can pass either
+ * `https://host/api` or `https://host` (we append `/api`).
+ */
+export function normalizeApiBaseUrl(raw: string): string {
+  const trimmed = raw.trim().replace(/\/+$/, '');
+  if (!trimmed) return DEFAULT_API_BASE_URL;
+  if (/\/api$/i.test(trimmed)) return trimmed;
+  return `${trimmed}/api`;
+}
+
+/**
+ * Resolve API base at runtime so a GitHub Pages build can point at a
+ * tunnel/public HTTPS backend without rebuilding:
+ *   ?api=https://xxxx.ngrok-free.app
+ * Persists to localStorage when set via query param.
+ */
+export function getApiBaseUrl(): string {
+  if (typeof window === 'undefined') {
+    return DEFAULT_API_BASE_URL;
+  }
+
+  try {
+    const params = new URLSearchParams(window.location.search);
+    const fromQuery = params.get('api');
+    if (fromQuery) {
+      const normalized = normalizeApiBaseUrl(fromQuery);
+      localStorage.setItem(API_BASE_STORAGE_KEY, normalized);
+      return normalized;
+    }
+
+    const stored = localStorage.getItem(API_BASE_STORAGE_KEY);
+    if (stored) return stored;
+  } catch {
+    // ignore storage / URL errors and fall through
+  }
+
+  return DEFAULT_API_BASE_URL;
+}
 
 class ApiService {
   private userId: string | null = null;
@@ -9,6 +51,8 @@ class ApiService {
   constructor() {
     if (typeof window !== 'undefined') {
       this.sessionToken = localStorage.getItem(SESSION_TOKEN_KEY);
+      // Apply ?api= once on boot so Pages can switch backends without rebuild
+      getApiBaseUrl();
     }
   }
 
@@ -37,7 +81,7 @@ class ApiService {
   }
 
   private async request(endpoint: string, options: RequestInit = {}) {
-    const url = `${API_BASE_URL}${endpoint}`;
+    const url = `${getApiBaseUrl()}${endpoint}`;
 
     const headers: Record<string, string> = {
       'Content-Type': 'application/json',

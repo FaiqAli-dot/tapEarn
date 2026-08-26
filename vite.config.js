@@ -2,7 +2,12 @@ import { defineConfig } from 'vite'
 import react from '@vitejs/plugin-react'
 import { resolve } from 'path'
 
+// GitHub Pages project site: https://faiqali-dot.github.io/tapEarn/
+// Local `npm run dev` / `npm run preview` / plain `npm run build` keep base `/`.
+const isGitHubPages = process.env.GITHUB_PAGES === 'true'
+
 export default defineConfig({
+  base: isGitHubPages ? '/tapEarn/' : '/',
   plugins: [react()],
   resolve: {
     alias: {
@@ -24,6 +29,10 @@ export default defineConfig({
     },
   },
   server: {
+    port: 3000,
+    host: true,
+  },
+  preview: {
     port: 3000,
     host: true,
   },
