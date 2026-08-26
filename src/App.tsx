@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react'
+import { useState, useEffect } from 'react'
 import { Routes, Route, useLocation } from 'react-router-dom'
 import { useTonAddress } from '@tonconnect/ui-react'
 import { motion, AnimatePresence } from 'framer-motion'
@@ -21,174 +21,137 @@ import { useGameState } from './hooks/useGameState'
 import { useTelegram } from './hooks/useTelegram'
 import { apiService } from './services/api'
 
-// Types
-import { GameState } from './types/game'
-
-// Import default game state
-const DEFAULT_GAME_STATE = {
-  points: 0,
-  energy: 1000,
-  maxEnergy: 1000,
-  energyRegenRate: 3,
-  tapPower: 1,
-  offlineEarningRate: 4,
-  offlineEarningMaxHours: 4,
-  totalTaps: 0,
-  totalPointsEarned: 0,
-  offlineEarnings: 0,
-  referralEarnings: 0,
-  lastActive: Date.now(),
-  dailyTasks: [],
-  lastDailyReset: Date.now(),
-  referralCode: '',
-  referralCount: 0,
-  walletConnected: false
-}
-
 function App() {
   const location = useLocation()
   const address = useTonAddress()
   const connected = !!address
-  const { user } = useTelegram()
-  
-  // Get user ID from URL or Telegram user, and store it in state to persist across navigation
+  const { user, isReady, getInitData, getStartParam } = useTelegram()
+
   const [currentUserId, setCurrentUserId] = useState<string | null>(null)
-  const [currentStartParam, setCurrentStartParam] = useState<string | null>(null)
-  
-  useEffect(() => {
-    const urlParams = new URLSearchParams(window.location.search)
-    const urlUserId = urlParams.get('userId')
-    const startParam = urlParams.get('start')
-    // Prioritize URL parameter over Telegram user ID for local development
-    const telegramUserId = urlUserId || user?.id?.toString()
-    
-    // Only update if we have a new user ID
-    if (telegramUserId && telegramUserId !== currentUserId) {
-      console.log(`🔍 URL User ID: ${urlUserId}, Telegram User ID: ${user?.id}, Final User ID: ${telegramUserId}`)
-      setCurrentUserId(telegramUserId)
-      // Store user ID in localStorage for admin access
-      localStorage.setItem('current_user_id', telegramUserId)
-    }
-    
-    // Store startParam for later use
-    if (startParam !== currentStartParam) {
-      setCurrentStartParam(startParam)
-    }
-  }, [user?.id, currentUserId, currentStartParam])
-  
-  // Use the stored user ID
-  const telegramUserId = currentUserId
-  
-  const { gameState, updateGameState, tap, completeDailyTask, purchaseUpgrade, setWalletConnection, refreshGameState } = useGameState(telegramUserId || undefined)
-  
+  const [authError, setAuthError] = useState<string | null>(null)
   const [isLoading, setIsLoading] = useState(true)
 
+  const { gameState, updateGameState, tap, completeDailyTask, purchaseUpgrade, setWalletConnection, refreshGameState } =
+    useGameState(currentUserId || undefined)
+
   useEffect(() => {
-    // Initialize game state
+    if (!isReady) return
+
     const initGame = async () => {
+      setIsLoading(true)
+      setAuthError(null)
+
       try {
+        const initData = getInitData()
+        const startParam = getStartParam()
+        const urlParams = new URLSearchParams(window.location.search)
+        const urlUserId = urlParams.get('userId')
+
+        let telegramUserId: string | null = null
+
+        if (initData) {
+          // Production path: verify initData on the server and get a JWT
+          const authResult = await apiService.authenticateWithTelegram(initData, startParam)
+          telegramUserId = authResult.user?.telegramId || null
+          console.log('✅ Authenticated via Telegram initData')
+        } else {
+          // Local browser path: only works if backend ALLOW_DEV_AUTH=true
+          const devUserId = urlUserId || user?.id?.toString()
+          if (!devUserId) {
+            setAuthError('Open this app from Telegram, or pass ?userId=... with ALLOW_DEV_AUTH enabled on the backend.')
+            setIsLoading(false)
+            return
+          }
+
+          try {
+            const authResult = await apiService.authenticateDev({
+              telegramId: String(devUserId),
+              username: user?.username || 'localuser',
+              firstName: user?.firstName || 'Local',
+              lastName: user?.lastName || 'User',
+              start: startParam
+            })
+            telegramUserId = authResult.user?.telegramId || String(devUserId)
+            console.log('⚠️ Authenticated via DEV auth (not for production)')
+          } catch (devAuthError: any) {
+            setAuthError(
+              devAuthError?.message ||
+                'Dev auth failed. Set ALLOW_DEV_AUTH=true on the backend for local testing, or open from Telegram.'
+            )
+            setIsLoading(false)
+            return
+          }
+        }
+
         if (!telegramUserId) {
-          console.error('No user ID available from Telegram or URL')
+          setAuthError('Could not resolve Telegram user id after authentication.')
           setIsLoading(false)
           return
         }
 
-        // Set user ID in API service
-        apiService.setUserId(telegramUserId)
-        console.log(`🔗 Frontend: Setting user ID to ${telegramUserId}`)
+        setCurrentUserId(telegramUserId)
+        localStorage.setItem('current_user_id', telegramUserId)
 
-        try {
-          // Initialize user with backend
-          const initResult = await apiService.initUser(telegramUserId, {
-            username: user?.username || 'localuser',
-            firstName: user?.firstName || 'Local',
-            lastName: user?.lastName || 'User',
-            startParam: currentStartParam
-          })
-          console.log(`✅ Frontend: User initialized - ${telegramUserId}`)
+        const initResult = await apiService.initUser()
+        console.log(`✅ User initialized - ${telegramUserId}`, initResult.referralLink)
 
-          // Get game state from backend
-          const gameStateResult = await apiService.getGameState()
-          const backendGameState = gameStateResult.data
-          console.log(`📊 Frontend: Got game state for ${telegramUserId} - Points: ${backendGameState.points}, Energy: ${backendGameState.energy}`)
+        const gameStateResult = await apiService.getGameState()
+        const backendGameState = gameStateResult.data
 
-          // Calculate offline earnings
-          const now = Date.now()
-          const timeDiff = now - backendGameState.lastActive
-          const hoursOffline = Math.min(timeDiff / (1000 * 60 * 60), backendGameState.offlineEarningMaxHours)
-          
-          let finalState = { ...backendGameState, lastActive: now }
-          
-          if (hoursOffline > 0) {
-            const offlinePoints = Math.floor(hoursOffline * backendGameState.offlineEarningRate)
-            if (offlinePoints > 0) {
-              finalState = {
-                ...finalState,
-                points: backendGameState.points + offlinePoints,
-                offlineEarnings: backendGameState.offlineEarnings + offlinePoints
-              }
+        const now = Date.now()
+        const lastActiveMs =
+          typeof backendGameState.lastActive === 'string' || backendGameState.lastActive instanceof Date
+            ? new Date(backendGameState.lastActive).getTime()
+            : Number(backendGameState.lastActive) || now
+        const timeDiff = now - lastActiveMs
+        const hoursOffline = Math.min(
+          timeDiff / (1000 * 60 * 60),
+          backendGameState.offlineEarningMaxHours || 4
+        )
+
+        let finalState = { ...backendGameState, lastActive: now }
+
+        if (hoursOffline > 0) {
+          const offlinePoints = Math.floor(hoursOffline * (backendGameState.offlineEarningRate || 0))
+          if (offlinePoints > 0) {
+            finalState = {
+              ...finalState,
+              points: backendGameState.points + offlinePoints,
+              offlineEarnings: (backendGameState.offlineEarnings || 0) + offlinePoints
             }
           }
-          
-          updateGameState(finalState)
-        } catch (backendError) {
-          console.error('Backend not available, using local storage:', backendError)
-          // Fallback to localStorage if backend fails - make it user-specific
-          const savedState = localStorage.getItem(`tapEarnGameState_${telegramUserId}`)
-          if (savedState) {
-            const parsedState = JSON.parse(savedState)
-            console.log(`💾 Frontend: Loading from localStorage for ${telegramUserId} - Points: ${parsedState.points}`)
-            updateGameState(parsedState)
-          } else {
-            // Create a new user state for local development
-            const newUserState = {
-              ...DEFAULT_GAME_STATE,
-              lastActive: Date.now(),
-              referralCode: Math.random().toString(36).substring(2, 8).toUpperCase()
-            }
-            console.log(`🆕 Frontend: Creating new local state for ${telegramUserId} - Points: ${newUserState.points}`)
-            updateGameState(newUserState)
-          }
         }
-              } catch (error) {
-          console.error('Failed to initialize game:', error)
-          // Final fallback - also user-specific
-          const newUserState = {
-            ...DEFAULT_GAME_STATE,
-            lastActive: Date.now(),
-            referralCode: Math.random().toString(36).substring(2, 8).toUpperCase()
-          }
-          updateGameState(newUserState)
-        } finally {
-          setIsLoading(false)
-        }
+
+        updateGameState(finalState)
+      } catch (error: any) {
+        console.error('Failed to initialize game:', error)
+        setAuthError(error?.message || 'Failed to authenticate with the server.')
+      } finally {
+        setIsLoading(false)
+      }
     }
 
     initGame()
-  }, [telegramUserId]) // Only depend on telegramUserId, not updateGameState or user
+  }, [isReady]) // eslint-disable-line react-hooks/exhaustive-deps
 
   // Save game state to localStorage whenever it changes - make it user-specific
   useEffect(() => {
-    if (!isLoading && gameState && telegramUserId) {
-      // Debounce localStorage saves to prevent excessive writes
+    if (!isLoading && gameState && currentUserId) {
       const timeoutId = setTimeout(() => {
-        localStorage.setItem(`tapEarnGameState_${telegramUserId}`, JSON.stringify(gameState))
-      }, 1000) // Save after 1 second of no changes
+        localStorage.setItem(`tapEarnGameState_${currentUserId}`, JSON.stringify(gameState))
+      }, 1000)
 
       return () => clearTimeout(timeoutId)
     }
-  }, [gameState, isLoading, telegramUserId])
+  }, [gameState, isLoading, currentUserId])
 
-  // Add refresh function to window for debugging
   useEffect(() => {
     if (typeof window !== 'undefined') {
-      (window as any).refreshGameState = refreshGameState
+      ;(window as any).refreshGameState = refreshGameState
       ;(window as any).logGameState = () => {
         console.log('🎮 Current Game State:', gameState)
         console.log('📋 Daily Tasks:', gameState?.dailyTasks)
       }
-      console.log('🔄 Debug: Call window.refreshGameState() to force refresh from backend')
-      console.log('📊 Debug: Call window.logGameState() to see current state')
     }
   }, [refreshGameState, gameState])
 
@@ -203,19 +166,33 @@ function App() {
     )
   }
 
+  if (authError) {
+    return (
+      <div className="tg-app flex items-center justify-center p-6">
+        <div className="text-center max-w-sm">
+          <h1 className="text-xl font-bold text-gray-800 mb-2">Sign-in required</h1>
+          <p className="text-gray-600 mb-4">{authError}</p>
+          <p className="text-sm text-gray-500">
+            Open TapEarn from your Telegram bot, or configure local DEV auth.
+          </p>
+        </div>
+      </div>
+    )
+  }
+
   return (
     <div className="tg-app">
-      <TopBar 
+      <TopBar
         user={user}
         gameState={gameState}
         connected={connected}
       />
-      
+
       <main className="pb-20">
         <AnimatePresence mode="wait">
           <Routes location={location} key={location.pathname}>
-            <Route 
-              path="/" 
+            <Route
+              path="/"
               element={
                 <motion.div
                   initial={{ opacity: 0, y: 20 }}
@@ -225,10 +202,10 @@ function App() {
                 >
                   <HomeScreen gameState={gameState} onTap={tap} />
                 </motion.div>
-              } 
+              }
             />
-            <Route 
-              path="/daily-earn" 
+            <Route
+              path="/daily-earn"
               element={
                 <motion.div
                   initial={{ opacity: 0, y: 20 }}
@@ -236,16 +213,16 @@ function App() {
                   exit={{ opacity: 0, y: -20 }}
                   transition={{ duration: 0.3 }}
                 >
-                  <DailyEarnUpgradesScreen 
+                  <DailyEarnUpgradesScreen
                     gameState={gameState}
                     onCompleteDailyTask={completeDailyTask}
                     onPurchaseUpgrade={purchaseUpgrade}
                   />
                 </motion.div>
-              } 
+              }
             />
-            <Route 
-              path="/profile" 
+            <Route
+              path="/profile"
               element={
                 <motion.div
                   initial={{ opacity: 0, y: 20 }}
@@ -255,10 +232,10 @@ function App() {
                 >
                   <ProfileScreen gameState={gameState} />
                 </motion.div>
-              } 
+              }
             />
-            <Route 
-              path="/connect-wallet" 
+            <Route
+              path="/connect-wallet"
               element={
                 <motion.div
                   initial={{ opacity: 0, y: 20 }}
@@ -266,15 +243,15 @@ function App() {
                   exit={{ opacity: 0, y: -20 }}
                   transition={{ duration: 0.3 }}
                 >
-                  <ConnectWalletScreen 
+                  <ConnectWalletScreen
                     gameState={gameState}
                     onSetWalletConnection={setWalletConnection}
                   />
                 </motion.div>
-              } 
+              }
             />
-            <Route 
-              path="/invite-friends" 
+            <Route
+              path="/invite-friends"
               element={
                 <motion.div
                   initial={{ opacity: 0, y: 20 }}
@@ -284,10 +261,10 @@ function App() {
                 >
                   <InviteFriendsScreen gameState={gameState} />
                 </motion.div>
-              } 
+              }
             />
-            <Route 
-              path="/admin/video-codes" 
+            <Route
+              path="/admin/video-codes"
               element={
                 <ProtectedAdminRoute allowedUserIds={['123456789']}>
                   <motion.div
@@ -299,7 +276,7 @@ function App() {
                     <VideoCodeAdmin />
                   </motion.div>
                 </ProtectedAdminRoute>
-              } 
+              }
             />
           </Routes>
         </AnimatePresence>

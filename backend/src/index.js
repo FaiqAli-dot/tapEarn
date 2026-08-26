@@ -2,9 +2,12 @@ import express from 'express';
 import cors from 'cors';
 import dotenv from 'dotenv';
 import mongoose from 'mongoose';
-import connectDB from './config/db.js';
+import connectDB, { stopMemoryMongo } from './config/db.js';
 import userRoutes from './routes/userRoutes.js';
 import videoCodeRoutes from './routes/videoCodeRoutes.js';
+import authRoutes from './routes/authRoutes.js';
+import { startTelegramBot, stopTelegramBot } from './bot/telegramBot.js';
+import { requireAuth } from './middleware/auth.js';
 
 // Load environment variables
 dotenv.config();
@@ -14,7 +17,7 @@ const PORT = process.env.PORT || 3001;
 
 // Middleware
 app.use(cors({
-  origin: process.env.FRONTEND_URL || true, // Allow all origins in development
+  origin: process.env.FRONTEND_URL || true,
   credentials: true
 }));
 app.use(express.json());
@@ -23,12 +26,25 @@ app.use(express.json());
 connectDB();
 
 // Routes
+app.use('/api/auth', authRoutes);
 app.use('/api/users', userRoutes);
-app.use('/api/video-codes', videoCodeRoutes);
+app.use('/api/video-codes', requireAuth, videoCodeRoutes);
 
 // Health check endpoint
 app.get('/health', (req, res) => {
-  res.status(200).json({ status: 'ok', timestamp: new Date() });
+  res.status(200).json({
+    status: 'ok',
+    timestamp: new Date(),
+    auth: {
+      botTokenConfigured: Boolean(
+        process.env.TELEGRAM_BOT_TOKEN &&
+        process.env.TELEGRAM_BOT_TOKEN !== 'your_bot_token_here'
+      ),
+      devAuthEnabled:
+        process.env.ALLOW_DEV_AUTH === 'true' &&
+        process.env.NODE_ENV !== 'production'
+    }
+  });
 });
 
 // Error handling middleware
@@ -54,6 +70,7 @@ const server = app.listen(PORT, '0.0.0.0', () => {
   console.log(`🚀 TapEarn Backend Server running on port ${PORT}`);
   console.log(`🌐 Environment: ${process.env.NODE_ENV || 'development'}`);
   console.log(`🔗 MongoDB: ${process.env.MONGODB_URI || 'mongodb://localhost:27017/tapearn'}`);
+  startTelegramBot();
 });
 
 // Graceful shutdown
@@ -61,7 +78,9 @@ const shutdown = async () => {
   console.log('Shutting down gracefully...');
   
   try {
+    stopTelegramBot();
     await mongoose.connection.close();
+    await stopMemoryMongo();
     console.log('MongoDB connection closed');
     
     server.close(() => {

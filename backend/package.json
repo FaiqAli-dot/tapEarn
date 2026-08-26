@@ -2,6 +2,7 @@
   "name": "tap-earn-backend",
   "version": "1.0.0",
   "description": "Backend server for TapEarn Telegram Mini App",
+  "type": "module",
   "main": "src/index.js",
   "scripts": {
     "start": "node src/index.js",
@@ -9,7 +10,9 @@
     "build": "tsc",
     "deploy": "npm run build && npm start",
     "setup": "node edit-env.js",
-    "init-video-codes": "node scripts/initVideoCodes.js"
+    "init-video-codes": "node scripts/initVideoCodes.js",
+    "test:auth": "node scripts/testTelegramAuth.js",
+    "dev:local": "USE_MEMORY_MONGO=true ALLOW_DEV_AUTH=true NODE_ENV=development nodemon src/index.js"
   },
   "dependencies": {
     "bcryptjs": "^2.4.3",
@@ -37,6 +40,7 @@
     "@types/jsonwebtoken": "^9.0.5",
     "@types/multer": "^1.4.7",
     "@types/node": "^20.0.0",
+    "mongodb-memory-server": "^11.2.0",
     "nodemon": "^3.0.1",
     "typescript": "^5.0.0"
   },

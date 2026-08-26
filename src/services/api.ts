@@ -1,23 +1,56 @@
 const API_BASE_URL = (import.meta as any).env?.VITE_API_BASE_URL || 'http://localhost:3001/api';
 
+const SESSION_TOKEN_KEY = 'tapearn_session_token';
+
 class ApiService {
   private userId: string | null = null;
+  private sessionToken: string | null = null;
+
+  constructor() {
+    if (typeof window !== 'undefined') {
+      this.sessionToken = localStorage.getItem(SESSION_TOKEN_KEY);
+    }
+  }
 
   setUserId(userId: string) {
     console.log(`🔗 API Service: Setting user ID to ${userId}`);
     this.userId = userId;
   }
 
+  setSessionToken(token: string | null) {
+    this.sessionToken = token;
+    if (typeof window === 'undefined') return;
+    if (token) {
+      localStorage.setItem(SESSION_TOKEN_KEY, token);
+    } else {
+      localStorage.removeItem(SESSION_TOKEN_KEY);
+    }
+  }
+
+  getSessionToken() {
+    return this.sessionToken;
+  }
+
+  clearSession() {
+    this.setSessionToken(null);
+    this.userId = null;
+  }
+
   private async request(endpoint: string, options: RequestInit = {}) {
     const url = `${API_BASE_URL}${endpoint}`;
 
+    const headers: Record<string, string> = {
+      'Content-Type': 'application/json',
+      ...(options.headers as Record<string, string> | undefined),
+    };
+
+    if (this.sessionToken) {
+      headers.Authorization = `Bearer ${this.sessionToken}`;
+    }
+
     const config: RequestInit = {
-      headers: {
-        'Content-Type': 'application/json',
-        ...(this.userId && { 'x-user-id': this.userId }),
-        ...options.headers,
-      },
       ...options,
+      headers,
     };
 
     try {
@@ -35,10 +68,54 @@ class ApiService {
     }
   }
 
-  // Initialize user
-  async initUser(userId: string, userData: any) {
-    const params = new URLSearchParams({ userId, ...userData });
-    return this.request(`/users/init?${params}`);
+  /**
+   * Authenticate with Telegram Mini App initData (production path).
+   * Optional startParam covers /start ref_CODE when it is only present in the URL.
+   */
+  async authenticateWithTelegram(initData: string, startParam?: string | null) {
+    const result = await this.request('/auth/telegram', {
+      method: 'POST',
+      body: JSON.stringify({ initData, startParam: startParam || null }),
+    });
+    if (result.token) {
+      this.setSessionToken(result.token);
+      if (result.user?.telegramId) {
+        this.setUserId(result.user.telegramId);
+      }
+    }
+    return result;
+  }
+
+  /**
+   * Local/browser auth when ALLOW_DEV_AUTH=true on backend.
+   */
+  async authenticateDev(payload: {
+    telegramId: string;
+    username?: string;
+    firstName?: string;
+    lastName?: string;
+    start?: string | null;
+  }) {
+    const result = await this.request('/auth/dev', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    });
+    if (result.token) {
+      this.setSessionToken(result.token);
+      if (result.user?.telegramId) {
+        this.setUserId(result.user.telegramId);
+      }
+    }
+    return result;
+  }
+
+  async getAuthMe() {
+    return this.request('/auth/me');
+  }
+
+  // Initialize / refresh user (requires session)
+  async initUser() {
+    return this.request('/users/init');
   }
 
   // Get user game state
@@ -164,4 +241,4 @@ class ApiService {
   }
 }
 
-export const apiService = new ApiService(); 
+export const apiService = new ApiService();

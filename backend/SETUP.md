@@ -72,9 +72,32 @@ npm start
 
 ## Authentication
 
-The backend uses Telegram user IDs for authentication. The user ID is passed via:
-- URL query parameter: `?userId=123456789`
-- Header: `x-user-id: 123456789`
+### Production (Telegram Mini App)
+
+1. Frontend reads `window.Telegram.WebApp.initData`
+2. `POST /api/auth/telegram` with `{ initData }`
+3. Backend verifies HMAC signature with `TELEGRAM_BOT_TOKEN`
+4. Backend returns a JWT
+5. All `/api/users/*` and `/api/video-codes/*` calls send:
+   `Authorization: Bearer <token>`
+
+Raw `userId` / `x-user-id` is **not** trusted anymore.
+
+### Local development (browser)
+
+Set in `backend/.env`:
+
+```env
+ALLOW_DEV_AUTH=true
+NODE_ENV=development
+```
+
+Then open the frontend with `?userId=123456789`. This calls `POST /api/auth/dev`.
+
+**Never enable `ALLOW_DEV_AUTH` in production.**
+
+See also: `documents/PHASE1_AUTH.md`
+
 
 ## Data Structure
 
