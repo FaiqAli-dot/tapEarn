@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback } from 'react'
 import { GameState, DailyTask } from '../types/game'
-import { apiService } from '../services/api'
+import { apiService, getApiBaseUrl } from '../services/api'
 
 // Simple notification function
 const showNotification = (message: string, type: 'success' | 'error' | 'info' = 'success') => {
@@ -264,7 +264,7 @@ export const useGameState = (userId?: string) => {
         // We use navigator.sendBeacon for reliable delivery during page unload
         // sendBeacon doesn't wait for a response, perfect for "fire and forget"
         // Since we are unmounting, we construct the request manually
-        const url = `${(import.meta as any).env?.VITE_API_BASE_URL || 'http://localhost:3001/api'}/users/sync-taps`;
+        const url = `${getApiBaseUrl()}/users/sync-taps`;
         const payload = JSON.stringify({ tapCount: unsyncedTaps });
         const blob = new Blob([payload], { type: 'application/json' });
 
