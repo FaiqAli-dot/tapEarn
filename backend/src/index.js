@@ -2,7 +2,7 @@ import express from 'express';
 import cors from 'cors';
 import dotenv from 'dotenv';
 import mongoose from 'mongoose';
-import connectDB from './config/db.js';
+import connectDB, { stopMemoryMongo } from './config/db.js';
 import userRoutes from './routes/userRoutes.js';
 import videoCodeRoutes from './routes/videoCodeRoutes.js';
 import authRoutes from './routes/authRoutes.js';
@@ -80,6 +80,7 @@ const shutdown = async () => {
   try {
     stopTelegramBot();
     await mongoose.connection.close();
+    await stopMemoryMongo();
     console.log('MongoDB connection closed');
     
     server.close(() => {
