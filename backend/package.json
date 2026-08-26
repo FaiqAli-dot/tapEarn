@@ -2,6 +2,7 @@
   "name": "tap-earn-backend",
   "version": "1.0.0",
   "description": "Backend server for TapEarn Telegram Mini App",
+  "type": "module",
   "main": "src/index.js",
   "scripts": {
     "start": "node src/index.js",
@@ -9,7 +10,8 @@
     "build": "tsc",
     "deploy": "npm run build && npm start",
     "setup": "node edit-env.js",
-    "init-video-codes": "node scripts/initVideoCodes.js"
+    "init-video-codes": "node scripts/initVideoCodes.js",
+    "test:auth": "node scripts/testTelegramAuth.js"
   },
   "dependencies": {
     "bcryptjs": "^2.4.3",

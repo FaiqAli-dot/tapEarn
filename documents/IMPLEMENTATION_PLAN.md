@@ -72,7 +72,7 @@ Remaining ÷ 2
 
 | Phase | Name | Why this order | Depends on |
 | ---: | --- | --- | --- |
-| **1** | Telegram auth + bot | Everything else is spoofable without this | — |
+| **1** | Telegram auth + bot | Everything else is spoofable without this | — | **In progress / implemented in code** |
 | **2** | Referral system (real + locked) | Growth loop + future 50/50 payouts | Phase 1 |
 | **3** | Server-authoritative game economy | Fair points; anti-cheat | Phase 1 |
 | **4** | Wallet bind + verification | Needed before any real TON money moves | Phase 1 |

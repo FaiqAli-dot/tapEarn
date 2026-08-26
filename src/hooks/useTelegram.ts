@@ -41,12 +41,15 @@ export const useTelegram = () => {
 
       // Check for referral parameter
       const urlParams = new URLSearchParams(window.location.search)
-      const startParam = urlParams.get('start') || tg.initDataUnsafe?.start_param
+      const startParam = urlParams.get('start') || urlParams.get('tgWebAppStartParam') || tg.initDataUnsafe?.start_param
       
-      if (startParam && startParam.startsWith('ref_')) {
-        const referralCode = startParam.substring(4)
-        // Store referral code for later use
-        localStorage.setItem('referralCode', referralCode)
+      if (startParam) {
+        const referralCode = startParam.startsWith('ref_')
+          ? startParam.substring(4)
+          : startParam
+        if (referralCode) {
+          localStorage.setItem('referralCode', referralCode)
+        }
       }
 
       setIsReady(true)
@@ -200,10 +203,25 @@ export const useTelegram = () => {
     }
   }
 
+  const getInitData = () => webApp?.initData || ''
+
+  const getStartParam = () => {
+    const urlParams = new URLSearchParams(window.location.search)
+    return (
+      urlParams.get('start') ||
+      urlParams.get('tgWebAppStartParam') ||
+      webApp?.initDataUnsafe?.start_param ||
+      localStorage.getItem('referralCode') ||
+      null
+    )
+  }
+
   return {
     user,
     webApp,
     isReady,
+    getInitData,
+    getStartParam,
     showAlert,
     showConfirm,
     showPopup,

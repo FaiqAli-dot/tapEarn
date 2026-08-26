@@ -25,7 +25,11 @@ const InviteFriendsScreen: React.FC<InviteFriendsScreenProps> = ({ gameState }) 
   const [copied, setCopied] = useState(false)
   const [shareMethod, setShareMethod] = useState<'telegram' | 'whatsapp' | 'copy' | null>(null)
 
-  const referralLink = `https://t.me/your_bot_username?start=ref_${gameState.referralCode}`
+  const botUsername = (
+    (import.meta as any).env?.VITE_TELEGRAM_BOT_USERNAME ||
+    'your_bot_username'
+  ).replace(/^@/, '')
+  const referralLink = `https://t.me/${botUsername}?start=ref_${gameState.referralCode}`
   const referralText = `🎮 Join my tap-to-earn game and get bonus points! Use my referral code: ${gameState.referralCode}\n\n${referralLink}`
 
   const handleCopyLink = async () => {
