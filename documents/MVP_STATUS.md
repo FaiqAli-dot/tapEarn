@@ -5,6 +5,8 @@
 **Audit date:** 2026-08-26  
 **Codebase reviewed:** `main` (source) + `gh-pages` (frontend deploy)
 
+**Next step:** See [`IMPLEMENTATION_PLAN.md`](./IMPLEMENTATION_PLAN.md) for ordered build plan (contract last; subscription = 1 TON → fee → 50% referrer / 50% owner).
+
 ---
 
 ## Executive summary
