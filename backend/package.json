@@ -12,6 +12,8 @@
     "setup": "node edit-env.js",
     "init-video-codes": "node scripts/initVideoCodes.js",
     "test:auth": "node scripts/testTelegramAuth.js",
+    "test": "node --test tests/*.test.js",
+    "test:mvp": "node --test tests/*.test.js",
     "dev:local": "USE_MEMORY_MONGO=true ALLOW_DEV_AUTH=true NODE_ENV=development nodemon src/index.js"
   },
   "dependencies": {
@@ -42,6 +44,7 @@
     "@types/node": "^20.0.0",
     "mongodb-memory-server": "^11.2.0",
     "nodemon": "^3.0.1",
+    "supertest": "^7.2.2",
     "typescript": "^5.0.0"
   },
   "keywords": [
