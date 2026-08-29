@@ -1,18 +1,19 @@
 import React, { useState } from 'react'
+import { Link } from 'react-router-dom'
 import { motion } from 'framer-motion'
 import { useTelegram } from '../hooks/useTelegram'
 import { GameState } from '../types/game'
-import { 
-  User, 
-  Trophy, 
-  Users, 
-  Coins, 
-  Zap, 
-  Clock, 
+import {
+  User,
+  Trophy,
+  Users,
+  Coins,
+  Zap,
+  Clock,
   TrendingUp,
-  Edit3,
   Copy,
-  Check
+  Check,
+  ChevronRight,
 } from 'lucide-react'
 
 interface ProfileScreenProps {
@@ -20,27 +21,8 @@ interface ProfileScreenProps {
 }
 
 const ProfileScreen: React.FC<ProfileScreenProps> = ({ gameState }) => {
-  const { user, hapticFeedback, showConfirm } = useTelegram()
-  const [isEditing, setIsEditing] = useState(false)
-  const [customName, setCustomName] = useState(user?.firstName || '')
+  const { user, hapticFeedback } = useTelegram()
   const [copied, setCopied] = useState(false)
-
-  const handleEditProfile = () => {
-    setIsEditing(true)
-  }
-
-  const handleSaveProfile = async () => {
-    if (customName.trim()) {
-      hapticFeedback('light')
-      setIsEditing(false)
-      // In a real app, you'd save this to backend
-    }
-  }
-
-  const handleCancelEdit = () => {
-    setCustomName(user?.firstName || '')
-    setIsEditing(false)
-  }
 
   const copyReferralCode = async () => {
     try {
@@ -53,52 +35,35 @@ const ProfileScreen: React.FC<ProfileScreenProps> = ({ gameState }) => {
     }
   }
 
-  const mockReferrals = [
-    {
-      id: '1',
-      username: 'john_doe',
-      joinedAt: Date.now() - 86400000 * 3, // 3 days ago
-      totalEarnings: 1250,
-      bonusEarned: 125
-    },
-    {
-      id: '2',
-      username: 'jane_smith',
-      joinedAt: Date.now() - 86400000 * 7, // 7 days ago
-      totalEarnings: 2100,
-      bonusEarned: 210
-    }
-  ]
-
   const stats = [
     {
       label: 'Total Points Earned',
       value: gameState.totalPointsEarned.toLocaleString(),
       icon: Coins,
       color: 'text-yellow-600',
-      bgColor: 'bg-yellow-100'
+      bgColor: 'bg-yellow-100',
     },
     {
       label: 'Total Taps',
       value: gameState.totalTaps.toLocaleString(),
       icon: Zap,
       color: 'text-blue-600',
-      bgColor: 'bg-blue-100'
+      bgColor: 'bg-blue-100',
     },
     {
       label: 'Offline Earnings',
       value: gameState.offlineEarnings.toLocaleString(),
       icon: Clock,
       color: 'text-green-600',
-      bgColor: 'bg-green-100'
+      bgColor: 'bg-green-100',
     },
     {
       label: 'Referral Earnings',
       value: gameState.referralEarnings.toLocaleString(),
       icon: Users,
       color: 'text-purple-600',
-      bgColor: 'bg-purple-100'
-    }
+      bgColor: 'bg-purple-100',
+    },
   ]
 
   const upgrades = [
@@ -107,85 +72,62 @@ const ProfileScreen: React.FC<ProfileScreenProps> = ({ gameState }) => {
       level: gameState.tapPower,
       maxLevel: 5,
       icon: Zap,
-      color: 'from-blue-500 to-blue-600'
+      color: 'from-blue-500 to-blue-600',
     },
     {
       name: 'Offline Earning',
       level: Math.floor(gameState.offlineEarningRate / 4),
       maxLevel: 5,
       icon: Clock,
-      color: 'from-green-500 to-green-600'
+      color: 'from-green-500 to-green-600',
     },
     {
       name: 'Energy Regen',
       level: gameState.energyRegenRate - 2,
       maxLevel: 8,
       icon: TrendingUp,
-      color: 'from-purple-500 to-purple-600'
-    }
+      color: 'from-purple-500 to-purple-600',
+    },
   ]
 
   return (
     <div className="min-h-screen p-4">
-      {/* Header */}
       <div className="text-center mb-6">
         <h1 className="text-2xl font-bold text-gray-800 mb-2">Profile</h1>
-        <p className="text-gray-600">Your gaming statistics and achievements</p>
+        <p className="text-gray-600">Stats synced from the server</p>
       </div>
 
-      {/* Profile Card */}
-      <div className="tg-card p-6 mb-6">
-        <div className="flex items-center justify-between mb-4">
-          <div className="flex items-center space-x-4">
-            <div className="w-16 h-16 bg-gradient-to-br from-blue-400 to-indigo-600 rounded-full flex items-center justify-center">
-              <User className="w-8 h-8 text-white" />
-            </div>
-            <div>
-              {isEditing ? (
-                <input
-                  type="text"
-                  value={customName}
-                  onChange={(e) => setCustomName(e.target.value)}
-                  className="text-xl font-bold text-gray-800 bg-transparent border-b-2 border-blue-500 focus:outline-none"
-                  autoFocus
-                />
-              ) : (
-                <h2 className="text-xl font-bold text-gray-800">{customName}</h2>
-              )}
-              <p className="text-gray-600">@{user?.username}</p>
-            </div>
+      <Link
+        to="/leaderboard"
+        className="tg-card p-4 mb-6 flex items-center justify-between hover:bg-gray-50 transition-colors"
+      >
+        <div className="flex items-center space-x-3">
+          <div className="w-10 h-10 bg-yellow-100 rounded-full flex items-center justify-center">
+            <Trophy className="w-5 h-5 text-yellow-600" />
           </div>
-          
-          {isEditing ? (
-            <div className="flex space-x-2">
-              <button
-                onClick={handleSaveProfile}
-                className="p-2 bg-green-500 text-white rounded-lg hover:bg-green-600 transition-colors"
-              >
-                <Check className="w-4 h-4" />
-              </button>
-              <button
-                onClick={handleCancelEdit}
-                className="p-2 bg-gray-500 text-white rounded-lg hover:bg-gray-600 transition-colors"
-              >
-                ✕
-              </button>
-            </div>
-          ) : (
-            <button
-              onClick={handleEditProfile}
-              className="p-2 bg-gray-100 text-gray-600 rounded-lg hover:bg-gray-200 transition-colors"
-            >
-              <Edit3 className="w-4 h-4" />
-            </button>
-          )}
+          <div>
+            <h3 className="font-semibold text-gray-800">Leaderboard</h3>
+            <p className="text-sm text-gray-600">Points, taps & referrals</p>
+          </div>
+        </div>
+        <ChevronRight className="w-5 h-5 text-gray-400" />
+      </Link>
+
+      <div className="tg-card p-6 mb-6">
+        <div className="flex items-center space-x-4 mb-4">
+          <div className="w-16 h-16 bg-gradient-to-br from-blue-400 to-indigo-600 rounded-full flex items-center justify-center">
+            <User className="w-8 h-8 text-white" />
+          </div>
+          <div>
+            <h2 className="text-xl font-bold text-gray-800">{user?.firstName || 'Player'}</h2>
+            <p className="text-gray-600">@{user?.username || 'player'}</p>
+          </div>
         </div>
 
-        {/* Referral Code */}
         <div className="bg-gradient-to-r from-purple-500 to-pink-500 p-4 rounded-lg text-white">
           <div className="flex items-center justify-between">
             <div>
-              <p className="text-sm opacity-90">Your Referral Code</p>
+              <p className="text-sm opacity-90">Referral Code</p>
               <p className="text-xl font-bold font-mono">{gameState.referralCode}</p>
             </div>
             <button
@@ -198,7 +140,6 @@ const ProfileScreen: React.FC<ProfileScreenProps> = ({ gameState }) => {
         </div>
       </div>
 
-      {/* Statistics Grid */}
       <div className="grid grid-cols-2 gap-4 mb-6">
         {stats.map((stat, index) => {
           const IconComponent = stat.icon
@@ -210,7 +151,9 @@ const ProfileScreen: React.FC<ProfileScreenProps> = ({ gameState }) => {
               transition={{ delay: index * 0.1 }}
               className="tg-card p-4 text-center"
             >
-              <div className={`w-12 h-12 ${stat.bgColor} rounded-full flex items-center justify-center mx-auto mb-3`}>
+              <div
+                className={`w-12 h-12 ${stat.bgColor} rounded-full flex items-center justify-center mx-auto mb-3`}
+              >
                 <IconComponent className={`w-6 h-6 ${stat.color}`} />
               </div>
               <div className="text-2xl font-bold text-gray-800 mb-1">{stat.value}</div>
@@ -220,8 +163,7 @@ const ProfileScreen: React.FC<ProfileScreenProps> = ({ gameState }) => {
         })}
       </div>
 
-      {/* Current Upgrades */}
-      <div className="tg-card p-4 mb-6">
+      <div className="tg-card p-4">
         <h3 className="text-lg font-semibold text-gray-800 mb-4 flex items-center">
           <Trophy className="w-5 h-5 mr-2 text-yellow-600" />
           Current Upgrades
@@ -238,67 +180,20 @@ const ProfileScreen: React.FC<ProfileScreenProps> = ({ gameState }) => {
                 className="flex items-center justify-between p-3 bg-gray-50 rounded-lg"
               >
                 <div className="flex items-center space-x-3">
-                  <div className={`w-8 h-8 bg-gradient-to-r ${upgrade.color} rounded-full flex items-center justify-center`}>
+                  <div
+                    className={`w-8 h-8 bg-gradient-to-r ${upgrade.color} rounded-full flex items-center justify-center`}
+                  >
                     <IconComponent className="w-4 h-4 text-white" />
                   </div>
                   <span className="font-medium text-gray-700">{upgrade.name}</span>
                 </div>
-                <div className="text-right">
-                  <div className="text-sm font-bold text-gray-800">
-                    Level {upgrade.level}/{upgrade.maxLevel}
-                  </div>
-                  <div className="text-xs text-gray-500">
-                    {Math.round((upgrade.level / upgrade.maxLevel) * 100)}% Complete
-                  </div>
+                <div className="text-sm font-bold text-gray-800">
+                  Lv {upgrade.level}/{upgrade.maxLevel}
                 </div>
               </motion.div>
             )
           })}
         </div>
-      </div>
-
-      {/* Referrals */}
-      <div className="tg-card p-4">
-        <h3 className="text-lg font-semibold text-gray-800 mb-4 flex items-center">
-          <Users className="w-5 h-5 mr-2 text-purple-600" />
-          Referrals ({gameState.referralCount})
-        </h3>
-        
-        {mockReferrals.length > 0 ? (
-          <div className="space-y-3">
-            {mockReferrals.map((referral, index) => (
-              <motion.div
-                key={referral.id}
-                initial={{ opacity: 0, y: 20 }}
-                animate={{ opacity: 1, y: 0 }}
-                transition={{ delay: index * 0.1 }}
-                className="flex items-center justify-between p-3 bg-gray-50 rounded-lg"
-              >
-                <div className="flex items-center space-x-3">
-                  <div className="w-8 h-8 bg-purple-100 rounded-full flex items-center justify-center">
-                    <User className="w-4 h-4 text-purple-600" />
-                  </div>
-                  <div>
-                    <div className="font-medium text-gray-800">@{referral.username}</div>
-                    <div className="text-xs text-gray-500">
-                      Joined {new Date(referral.joinedAt).toLocaleDateString()}
-                    </div>
-                  </div>
-                </div>
-                <div className="text-right">
-                  <div className="text-sm font-bold text-green-600">+{referral.bonusEarned}</div>
-                  <div className="text-xs text-gray-500">Bonus earned</div>
-                </div>
-              </motion.div>
-            ))}
-          </div>
-        ) : (
-          <div className="text-center py-8 text-gray-500">
-            <Users className="w-12 h-12 mx-auto mb-3 text-gray-300" />
-            <p>No referrals yet</p>
-            <p className="text-sm">Share your referral code to earn bonuses!</p>
-          </div>
-        )}
       </div>
     </div>
   )

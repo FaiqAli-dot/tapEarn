@@ -1,3 +1,10 @@
+import type {
+  Campaign,
+  LeaderboardEntry,
+  LeaderboardMyRank,
+  LeaderboardType,
+} from '../types/game';
+
 const SESSION_TOKEN_KEY = 'tapearn_session_token';
 const API_BASE_STORAGE_KEY = 'tapearn_api_base_url';
 const PRODUCTION_API_BASE_URL = 'https://yorza.onrender.com/api';
@@ -75,6 +82,11 @@ export function getApiBaseUrl(): string {
   return fallback;
 }
 
+export interface WalletStatePayload {
+  walletConnected: boolean;
+  walletAddress?: string;
+}
+
 class ApiService {
   private userId: string | null = null;
   private sessionToken: string | null = null;
@@ -82,13 +94,11 @@ class ApiService {
   constructor() {
     if (typeof window !== 'undefined') {
       this.sessionToken = localStorage.getItem(SESSION_TOKEN_KEY);
-      // Apply ?api= once on boot so Pages can switch backends without rebuild
       getApiBaseUrl();
     }
   }
 
   setUserId(userId: string) {
-    console.log(`🔗 API Service: Setting user ID to ${userId}`);
     this.userId = userId;
   }
 
@@ -133,7 +143,9 @@ class ApiService {
       const data = await response.json();
 
       if (!response.ok) {
-        throw new Error(data.error || 'API request failed');
+        const err = new Error(data.error || 'API request failed') as Error & { status?: number };
+        err.status = response.status;
+        throw err;
       }
 
       return data;
@@ -146,10 +158,6 @@ class ApiService {
     }
   }
 
-  /**
-   * Authenticate with Telegram Mini App initData (production path).
-   * Optional startParam covers /start ref_CODE when it is only present in the URL.
-   */
   async authenticateWithTelegram(initData: string, startParam?: string | null) {
     const result = await this.request('/auth/telegram', {
       method: 'POST',
@@ -164,9 +172,6 @@ class ApiService {
     return result;
   }
 
-  /**
-   * Local/browser auth when ALLOW_DEV_AUTH=true on backend.
-   */
   async authenticateDev(payload: {
     telegramId: string;
     username?: string;
@@ -191,93 +196,94 @@ class ApiService {
     return this.request('/auth/me');
   }
 
-  // Initialize / refresh user (requires session)
   async initUser() {
     return this.request('/users/init');
   }
 
-  // Get user game state
+  async getUserProfile() {
+    return this.request('/users/me');
+  }
+
   async getGameState() {
     return this.request('/users/game-state');
   }
 
-  // Update user game state
-  async updateGameState(gameState: any) {
+  /** Wallet-only game-state sync (server rejects points/totalTaps). */
+  async updateWalletState(payload: WalletStatePayload) {
     return this.request('/users/game-state', {
       method: 'POST',
-      body: JSON.stringify(gameState),
+      body: JSON.stringify(payload),
     });
   }
 
-  // Tap action (legacy single tap)
   async tap() {
-    console.log(`🎯 API Service: Making tap request for user ${this.userId}`);
-    const result = await this.request('/users/tap', {
-      method: 'POST',
-    });
-    console.log(`🎯 API Service: Tap response - Points: ${result.points}, Energy: ${result.energy}`);
-    return result;
+    return this.request('/users/tap', { method: 'POST' });
   }
 
-  // Batched sync taps
   async syncTaps(tapCount: number) {
-    console.log(`🎯 API Service: Syncing ${tapCount} taps for user ${this.userId}`);
-    const result = await this.request('/users/sync-taps', {
+    return this.request('/users/sync-taps', {
       method: 'POST',
       body: JSON.stringify({ tapCount }),
     });
-    console.log(`🎯 API Service: Sync response - Points: ${result.points}, Energy: ${result.energy}`);
-    return result;
   }
 
-  // Complete daily task
   async completeDailyTask(taskId: string) {
-    console.log(`🎯 API Service: Completing daily task ${taskId} for user ${this.userId}`);
-    const result = await this.request('/users/complete-task', {
+    return this.request('/users/complete-task', {
       method: 'POST',
       body: JSON.stringify({ taskId }),
     });
-    console.log(`🎯 API Service: Daily task completed - Points: ${result.points}`);
-    return result;
   }
 
-  // Purchase upgrade
-  async purchaseUpgrade(upgradeId: string, cost: number) {
-    console.log(`🎯 API Service: Purchasing upgrade ${upgradeId} for ${cost} points, user ${this.userId}`);
-    const result = await this.request('/users/purchase-upgrade', {
+  async purchaseUpgrade(upgradeId: string) {
+    return this.request('/users/purchase-upgrade', {
       method: 'POST',
-      body: JSON.stringify({ upgradeId, cost }),
+      body: JSON.stringify({ upgradeId }),
     });
-    console.log(`🎯 API Service: Upgrade purchased - Points: ${result.points}`);
-    return result;
   }
 
-  // Get available upgrades
   async getAvailableUpgrades() {
     return this.request('/users/upgrades');
   }
 
-  // Reset daily tasks
   async resetDailyTasks() {
-    return this.request('/users/reset-daily-tasks', {
-      method: 'POST',
-    });
+    return this.request('/users/reset-daily-tasks', { method: 'POST' });
   }
 
-  // Get leaderboard
-  async getLeaderboard(limit: number = 10) {
-    return this.request(`/users/leaderboard?limit=${limit}`);
+  async getLeaderboard(
+    type: LeaderboardType = 'points',
+    limit: number = 10
+  ): Promise<{ data: LeaderboardEntry[]; myRank: LeaderboardMyRank | null }> {
+    const result = await this.request(
+      `/users/leaderboard?type=${encodeURIComponent(type)}&limit=${limit}`
+    );
+    return { data: result.data, myRank: result.myRank ?? null };
   }
 
-  // Get video code by task ID
-  async getVideoCode(taskId: string) {
-    const result = await this.request(`/video-codes/${taskId}`, {
-      method: 'GET',
-    });
+  async getCampaigns(): Promise<Campaign[]> {
+    const result = await this.request('/campaigns');
     return result.data;
   }
 
-  // Verify video code
+  async completeCampaign(campaignId: string) {
+    return this.request(`/campaigns/${campaignId}/complete`, { method: 'POST' });
+  }
+
+  /** Returns true if the current session has admin JWT access to video-codes. */
+  async checkAdminAccess(): Promise<boolean> {
+    try {
+      await this.request('/video-codes');
+      return true;
+    } catch (error: any) {
+      if (error?.status === 403 || error?.status === 401) return false;
+      throw error;
+    }
+  }
+
+  async getVideoCode(taskId: string) {
+    const result = await this.request(`/video-codes/${taskId}`, { method: 'GET' });
+    return result.data;
+  }
+
   async verifyVideoCode(taskId: string, enteredCode: string) {
     const result = await this.request('/video-codes/verify', {
       method: 'POST',
@@ -286,23 +292,22 @@ class ApiService {
     return result.data;
   }
 
-  // Admin: Get all video codes
   async getAllVideoCodes() {
-    const result = await this.request('/video-codes', {
-      method: 'GET',
-    });
+    const result = await this.request('/video-codes', { method: 'GET' });
     return result.data;
   }
 
-  // Admin: Create or update video code
-  async createOrUpdateVideoCode(taskId: string, data: {
-    videoUrl: string;
-    code: string;
-    hint?: string;
-    timeToShow?: number;
-    points?: number;
-    isActive?: boolean;
-  }) {
+  async createOrUpdateVideoCode(
+    taskId: string,
+    data: {
+      videoUrl: string;
+      code: string;
+      hint?: string;
+      timeToShow?: number;
+      points?: number;
+      isActive?: boolean;
+    }
+  ) {
     const result = await this.request(`/video-codes/${taskId}`, {
       method: 'POST',
       body: JSON.stringify(data),
@@ -310,11 +315,8 @@ class ApiService {
     return result.data;
   }
 
-  // Admin: Delete video code
   async deleteVideoCode(taskId: string) {
-    const result = await this.request(`/video-codes/${taskId}`, {
-      method: 'DELETE',
-    });
+    const result = await this.request(`/video-codes/${taskId}`, { method: 'DELETE' });
     return result.data;
   }
 }

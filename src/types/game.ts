@@ -57,11 +57,44 @@ export interface Upgrade {
 }
 
 export interface Referral {
-  id: string
+  userId: string
   username: string
-  joinedAt: number
-  totalEarnings: number
-  bonusEarned: number
+  joinedAt: number | string
+}
+
+export type LeaderboardType = 'points' | 'clicks' | 'referrals'
+
+export interface LeaderboardUser {
+  telegramId: string
+  username: string | null
+  firstName: string | null
+  lastName: string | null
+}
+
+export interface LeaderboardEntry {
+  rank: number
+  user: LeaderboardUser
+  score: number
+}
+
+export interface LeaderboardMyRank {
+  rank: number
+  score: number
+}
+
+export type CampaignType = 'VIDEO' | 'SPONSORED_POST'
+
+export interface Campaign {
+  _id: string
+  type: CampaignType
+  title: string
+  description: string
+  url: string
+  thumbnail: string
+  rewardPoints: number
+  startDate: string
+  endDate: string | null
+  status: string
 }
 
 export interface User {
