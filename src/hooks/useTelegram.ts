@@ -9,12 +9,21 @@ declare global {
   }
 }
 
-/** True when running inside Telegram with a usable WebApp API (not just the stub script in a browser). */
+/**
+ * True only inside a real Telegram Mini App (signed initData or Telegram client platform).
+ * The telegram-web-app.js script in a normal browser creates a stub WebApp without mainButton.
+ */
 function isRealTelegramWebApp(tg: TelegramWebApp): boolean {
-  const hasInitData = Boolean(tg.initData && tg.initData.length > 0)
-  const hasUser = Boolean(tg.initDataUnsafe?.user?.id)
-  const hasMiniAppUi = Boolean(tg.mainButton && tg.backButton)
-  return hasInitData || hasUser || hasMiniAppUi
+  if (tg.initData && tg.initData.length > 0) {
+    return true
+  }
+  const platform = tg.platform || ''
+  const inTelegramClient =
+    platform !== '' &&
+    platform !== 'unknown' &&
+    platform !== 'web' &&
+    Boolean(tg.initDataUnsafe?.user?.id)
+  return inTelegramClient
 }
 
 function readDevUserFromUrl(): User {
@@ -66,42 +75,36 @@ export const useTelegram = () => {
       try {
         tg.ready?.()
         tg.expand?.()
-      } catch {
-        // ignore — some clients expose partial APIs
-      }
+        applyThemeParams(tg)
 
-      applyThemeParams(tg)
+        if (tg.initDataUnsafe?.user) {
+          setUser(tg.initDataUnsafe.user)
+        }
 
-      if (tg.initDataUnsafe?.user) {
-        setUser(tg.initDataUnsafe.user)
-      }
+        const urlParams = new URLSearchParams(window.location.search)
+        const startParam =
+          urlParams.get('start') ||
+          urlParams.get('tgWebAppStartParam') ||
+          tg.initDataUnsafe?.start_param
+        storeReferralFromStartParam(startParam)
 
-      const urlParams = new URLSearchParams(window.location.search)
-      const startParam =
-        urlParams.get('start') ||
-        urlParams.get('tgWebAppStartParam') ||
-        tg.initDataUnsafe?.start_param
-      storeReferralFromStartParam(startParam)
+        if (typeof tg.onEvent === 'function') {
+          tg.onEvent('themeChanged', () => applyThemeParams(tg))
+        }
 
-      if (typeof tg.onEvent === 'function') {
-        tg.onEvent('themeChanged', () => applyThemeParams(tg))
-        tg.onEvent('viewportChanged', () => {
-          // reserved for future layout tweaks
-        })
-      }
+        if (tg.mainButton?.onClick) {
+          tg.mainButton.onClick(() => {})
+        }
 
-      if (tg.mainButton?.onClick) {
-        tg.mainButton.onClick(() => {
-          // default main button handler
-        })
-      }
-
-      if (tg.backButton?.onClick) {
-        tg.backButton.onClick(() => {
-          if (window.history.length > 1) {
-            window.history.back()
-          }
-        })
+        if (tg.backButton?.onClick) {
+          tg.backButton.onClick(() => {
+            if (window.history.length > 1) {
+              window.history.back()
+            }
+          })
+        }
+      } catch (err) {
+        console.warn('Telegram WebApp init partial failure:', err)
       }
 
       setIsReady(true)
