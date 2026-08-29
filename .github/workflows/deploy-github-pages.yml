@@ -29,11 +29,10 @@ jobs:
         run: npm ci
 
       - name: Build for GitHub Pages
-        # base=/tapEarn/ via GITHUB_PAGES; do not bake a LAN IP into the Pages build.
-        # Default API stays localhost; use ?api=https://… on the live site to point at a tunnel.
         run: npm run build:pages
         env:
           GITHUB_PAGES: 'true'
+          VITE_API_BASE_URL: https://yorza.onrender.com/api
 
       - name: Deploy to gh-pages
         uses: peaceiris/actions-gh-pages@v4

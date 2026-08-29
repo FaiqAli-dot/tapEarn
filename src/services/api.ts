@@ -1,8 +1,26 @@
-const DEFAULT_API_BASE_URL =
-  (import.meta as any).env?.VITE_API_BASE_URL || 'http://localhost:3001/api';
-
 const SESSION_TOKEN_KEY = 'tapearn_session_token';
 const API_BASE_STORAGE_KEY = 'tapearn_api_base_url';
+const PRODUCTION_API_BASE_URL = 'https://yorza.onrender.com/api';
+
+function builtInApiBaseUrl(): string {
+  const fromEnv = (import.meta as any).env?.VITE_API_BASE_URL as string | undefined;
+  if (fromEnv) return fromEnv;
+  if (typeof window !== 'undefined' && window.location.hostname === 'faiqali-dot.github.io') {
+    return PRODUCTION_API_BASE_URL;
+  }
+  return 'http://localhost:3001/api';
+}
+
+/**
+ * HTTPS pages cannot call http:// (mixed content → "Failed to fetch").
+ */
+function isUsableApiBase(url: string): boolean {
+  if (typeof window === 'undefined') return true;
+  if (window.location.protocol === 'https:' && url.startsWith('http://')) {
+    return false;
+  }
+  return true;
+}
 
 /**
  * Normalize an API base so callers can pass either
@@ -10,9 +28,20 @@ const API_BASE_STORAGE_KEY = 'tapearn_api_base_url';
  */
 export function normalizeApiBaseUrl(raw: string): string {
   const trimmed = raw.trim().replace(/\/+$/, '');
-  if (!trimmed) return DEFAULT_API_BASE_URL;
+  if (!trimmed) return builtInApiBaseUrl();
   if (/\/api$/i.test(trimmed)) return trimmed;
   return `${trimmed}/api`;
+}
+
+function apiParamFromLocation(): string | null {
+  if (typeof window === 'undefined') return null;
+  const fromSearch = new URLSearchParams(window.location.search).get('api');
+  if (fromSearch) return fromSearch;
+  const hash = window.location.hash.startsWith('#')
+    ? window.location.hash.slice(1)
+    : window.location.hash;
+  if (!hash) return null;
+  return new URLSearchParams(hash.startsWith('?') ? hash.slice(1) : hash).get('api');
 }
 
 /**
@@ -22,26 +51,28 @@ export function normalizeApiBaseUrl(raw: string): string {
  * Persists to localStorage when set via query param.
  */
 export function getApiBaseUrl(): string {
+  const fallback = builtInApiBaseUrl();
   if (typeof window === 'undefined') {
-    return DEFAULT_API_BASE_URL;
+    return fallback;
   }
 
   try {
-    const params = new URLSearchParams(window.location.search);
-    const fromQuery = params.get('api');
+    const fromQuery = apiParamFromLocation();
     if (fromQuery) {
       const normalized = normalizeApiBaseUrl(fromQuery);
-      localStorage.setItem(API_BASE_STORAGE_KEY, normalized);
-      return normalized;
+      if (isUsableApiBase(normalized)) {
+        localStorage.setItem(API_BASE_STORAGE_KEY, normalized);
+        return normalized;
+      }
     }
 
     const stored = localStorage.getItem(API_BASE_STORAGE_KEY);
-    if (stored) return stored;
+    if (stored && isUsableApiBase(stored)) return stored;
   } catch {
     // ignore storage / URL errors and fall through
   }
 
-  return DEFAULT_API_BASE_URL;
+  return fallback;
 }
 
 class ApiService {
@@ -108,6 +139,9 @@ class ApiService {
       return data;
     } catch (error) {
       console.error('API request failed:', error);
+      if (error instanceof TypeError) {
+        throw new Error(`Failed to fetch ${url}`);
+      }
       throw error;
     }
   }
