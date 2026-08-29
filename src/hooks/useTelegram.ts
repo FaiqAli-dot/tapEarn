@@ -9,97 +9,112 @@ declare global {
   }
 }
 
+function isLocalDevHost(): boolean {
+  const host = window.location.hostname
+  return host === 'localhost' || host === '127.0.0.1' || host === '0.0.0.0'
+}
+
+/**
+ * True only inside a real Telegram Mini App (signed initData or Telegram native client).
+ * telegram-web-app.js in a normal browser creates a stub without mainButton/backButton.
+ */
+function isRealTelegramWebApp(tg: TelegramWebApp): boolean {
+  if (isLocalDevHost()) {
+    return false
+  }
+  if (tg.initData && tg.initData.length > 0) {
+    return true
+  }
+  const platform = (tg.platform || '').toLowerCase()
+  const nativePlatforms = ['ios', 'android', 'macos', 'tdesktop', 'weba', 'webk', 'unigram']
+  return nativePlatforms.includes(platform) && Boolean(tg.initDataUnsafe?.user?.id)
+}
+
+function readDevUserFromUrl(): User {
+  const urlParams = new URLSearchParams(window.location.search)
+  const urlUserId = urlParams.get('userId')
+  const id = urlUserId ? Number(urlUserId) : 123456789
+
+  return {
+    id: Number.isFinite(id) ? id : 123456789,
+    username: urlParams.get('username') || 'testuser',
+    firstName: urlParams.get('firstName') || 'Test',
+    lastName: urlParams.get('lastName') || 'User',
+    isPremium: false,
+    languageCode: 'en'
+  }
+}
+
+function applyThemeParams(tg: TelegramWebApp) {
+  if (!tg.themeParams) return
+  document.documentElement.style.setProperty('--tg-bg-color', tg.themeParams.bg_color)
+  document.documentElement.style.setProperty('--tg-text-color', tg.themeParams.text_color)
+  document.documentElement.style.setProperty('--tg-hint-color', tg.themeParams.hint_color)
+  document.documentElement.style.setProperty('--tg-link-color', tg.themeParams.link_color)
+  document.documentElement.style.setProperty('--tg-button-color', tg.themeParams.button_color)
+  document.documentElement.style.setProperty('--tg-button-text-color', tg.themeParams.button_text_color)
+}
+
+function storeReferralFromStartParam(startParam: string | null | undefined) {
+  if (!startParam) return
+  const referralCode = startParam.startsWith('ref_')
+    ? startParam.substring(4)
+    : startParam
+  if (referralCode) {
+    localStorage.setItem('referralCode', referralCode)
+  }
+}
+
 export const useTelegram = () => {
   const [user, setUser] = useState<User | null>(null)
   const [webApp, setWebApp] = useState<TelegramWebApp | null>(null)
   const [isReady, setIsReady] = useState(false)
 
   useEffect(() => {
-    // Check if running in Telegram Web App
-    if (window.Telegram?.WebApp) {
-      const tg = window.Telegram.WebApp
+    const tg = window.Telegram?.WebApp
+
+    if (tg && isRealTelegramWebApp(tg)) {
       setWebApp(tg)
 
-      // Initialize Telegram Web App
-      tg.ready()
-      tg.expand()
+      try {
+        tg.ready?.()
+        tg.expand?.()
+        applyThemeParams(tg)
 
-      // Set theme colors
-      if (tg.themeParams) {
-        document.documentElement.style.setProperty('--tg-bg-color', tg.themeParams.bg_color)
-        document.documentElement.style.setProperty('--tg-text-color', tg.themeParams.text_color)
-        document.documentElement.style.setProperty('--tg-hint-color', tg.themeParams.hint_color)
-        document.documentElement.style.setProperty('--tg-link-color', tg.themeParams.link_color)
-        document.documentElement.style.setProperty('--tg-button-color', tg.themeParams.button_color)
-        document.documentElement.style.setProperty('--tg-button-text-color', tg.themeParams.button_text_color)
-      }
-
-      // Get user data
-      if (tg.initDataUnsafe?.user) {
-        setUser(tg.initDataUnsafe.user)
-      }
-
-      // Check for referral parameter
-      const urlParams = new URLSearchParams(window.location.search)
-      const startParam = urlParams.get('start') || urlParams.get('tgWebAppStartParam') || tg.initDataUnsafe?.start_param
-      
-      if (startParam) {
-        const referralCode = startParam.startsWith('ref_')
-          ? startParam.substring(4)
-          : startParam
-        if (referralCode) {
-          localStorage.setItem('referralCode', referralCode)
+        if (tg.initDataUnsafe?.user) {
+          setUser(tg.initDataUnsafe.user)
         }
+
+        const urlParams = new URLSearchParams(window.location.search)
+        const startParam =
+          urlParams.get('start') ||
+          urlParams.get('tgWebAppStartParam') ||
+          tg.initDataUnsafe?.start_param
+        storeReferralFromStartParam(startParam)
+
+        if (typeof tg.onEvent === 'function') {
+          tg.onEvent('themeChanged', () => applyThemeParams(tg))
+        }
+        // mainButton/backButton handlers are registered via setMainButton/setBackButton when needed
+      } catch (err) {
+        console.warn('Telegram WebApp init partial failure:', err)
       }
 
       setIsReady(true)
-
-      // Handle theme changes
-      tg.onEvent('themeChanged', () => {
-        if (tg.themeParams) {
-          document.documentElement.style.setProperty('--tg-bg-color', tg.themeParams.bg_color)
-          document.documentElement.style.setProperty('--tg-text-color', tg.themeParams.text_color)
-          document.documentElement.style.setProperty('--tg-hint-color', tg.themeParams.hint_color)
-          document.documentElement.style.setProperty('--tg-link-color', tg.themeParams.link_color)
-          document.documentElement.style.setProperty('--tg-button-color', tg.themeParams.button_color)
-          document.documentElement.style.setProperty('--tg-button-text-color', tg.themeParams.button_text_color)
-        }
-      })
-
-      // Handle viewport changes
-      tg.onEvent('viewportChanged', () => {
-        // Handle viewport changes if needed
-      })
-
-      // Handle main button clicks
-      tg.mainButton.onClick(() => {
-        // Handle main button click
-      })
-
-      // Handle back button clicks
-      tg.backButton.onClick(() => {
-        // Handle back button click
-        if (window.history.length > 1) {
-          window.history.back()
-        }
-      })
-
     } else {
-      // Not running in Telegram, create mock data for development
-      setUser({
-        id: 123456789,
-        username: 'testuser',
-        firstName: 'Test',
-        lastName: 'User',
-        isPremium: false,
-        languageCode: 'en'
-      })
+      setUser(readDevUserFromUrl())
+
+      const urlParams = new URLSearchParams(window.location.search)
+      storeReferralFromStartParam(
+        urlParams.get('start') || urlParams.get('tgWebAppStartParam')
+      )
+
       setIsReady(true)
     }
   }, [])
 
   const showAlert = (message: string) => {
-    if (webApp) {
+    if (webApp?.showAlert) {
       webApp.showAlert(message)
     } else {
       alert(message)
@@ -108,7 +123,7 @@ export const useTelegram = () => {
 
   const showConfirm = (message: string): Promise<boolean> => {
     return new Promise((resolve) => {
-      if (webApp) {
+      if (webApp?.showConfirm) {
         webApp.showConfirm(message, (confirmed) => {
           resolve(confirmed)
         })
@@ -119,13 +134,13 @@ export const useTelegram = () => {
   }
 
   const showPopup = (title: string, message: string, buttons: Array<{ id: string; text: string; type?: string }>) => {
-    if (webApp) {
+    if (webApp?.showPopup) {
       webApp.showPopup({
         title,
         message,
         buttons: buttons.map(btn => ({
           id: btn.id,
-          type: (btn.type as any) || 'default',
+          type: (btn.type as 'default' | 'ok' | 'close' | 'cancel' | 'destructive') || 'default',
           text: btn.text
         }))
       })
@@ -133,7 +148,7 @@ export const useTelegram = () => {
   }
 
   const openLink = (url: string, tryInstantView = false) => {
-    if (webApp) {
+    if (webApp?.openLink) {
       webApp.openLink(url, { try_instant_view: tryInstantView })
     } else {
       window.open(url, '_blank')
@@ -141,7 +156,7 @@ export const useTelegram = () => {
   }
 
   const openTelegramLink = (url: string) => {
-    if (webApp) {
+    if (webApp?.openTelegramLink) {
       webApp.openTelegramLink(url)
     } else {
       window.open(url, '_blank')
@@ -149,56 +164,56 @@ export const useTelegram = () => {
   }
 
   const sendData = (data: string) => {
-    if (webApp) {
+    if (webApp?.sendData) {
       webApp.sendData(data)
     }
   }
 
   const hapticFeedback = (style: 'light' | 'medium' | 'heavy' | 'rigid' | 'soft') => {
-    if (webApp) {
+    if (webApp?.hapticFeedback?.impactOccurred) {
       webApp.hapticFeedback.impactOccurred(style)
     }
   }
 
   const notificationFeedback = (type: 'error' | 'success' | 'warning') => {
-    if (webApp) {
+    if (webApp?.hapticFeedback?.notificationOccurred) {
       webApp.hapticFeedback.notificationOccurred(type)
     }
   }
 
   const selectionFeedback = () => {
-    if (webApp) {
+    if (webApp?.hapticFeedback?.selectionChanged) {
       webApp.hapticFeedback.selectionChanged()
     }
   }
 
   const setMainButton = (text: string, callback?: () => void) => {
-    if (webApp) {
-      webApp.mainButton.text = text
-      if (callback) {
-        webApp.mainButton.onClick(callback)
-      }
-      webApp.mainButton.show()
+    const mainButton = webApp?.mainButton
+    if (!mainButton?.onClick) return
+
+    mainButton.text = text
+    if (callback) {
+      mainButton.onClick(callback)
     }
+    mainButton.show?.()
   }
 
   const hideMainButton = () => {
-    if (webApp) {
-      webApp.mainButton.hide()
-    }
+    webApp?.mainButton?.hide?.()
   }
 
   const setBackButton = (callback?: () => void) => {
-    if (webApp) {
-      if (callback) {
-        webApp.backButton.onClick(callback)
-      }
-      webApp.backButton.isVisible = true
+    const backButton = webApp?.backButton
+    if (!backButton?.onClick) return
+
+    if (callback) {
+      backButton.onClick(callback)
     }
+    backButton.isVisible = true
   }
 
   const hideBackButton = () => {
-    if (webApp) {
+    if (webApp?.backButton) {
       webApp.backButton.isVisible = false
     }
   }
