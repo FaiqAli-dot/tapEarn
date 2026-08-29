@@ -2,8 +2,14 @@ import TelegramBot from 'node-telegram-bot-api';
 
 let botInstance = null;
 
+const DEFAULT_MINI_APP_URL = 'https://faiqali-dot.github.io/tapEarn';
+
+function getFrontendBaseUrl() {
+  return (process.env.FRONTEND_URL || DEFAULT_MINI_APP_URL).replace(/\/$/, '');
+}
+
 function buildMiniAppUrl(startParam) {
-  const base = (process.env.FRONTEND_URL || '').replace(/\/$/, '');
+  const base = getFrontendBaseUrl();
   if (!base) return null;
   if (startParam) {
     const sep = base.includes('?') ? '&' : '?';
@@ -36,6 +42,18 @@ export function startTelegramBot() {
   const token = process.env.TELEGRAM_BOT_TOKEN;
   if (!token || token === 'your_bot_token_here') {
     console.warn('⚠️  Telegram bot not started: TELEGRAM_BOT_TOKEN is not set');
+    return null;
+  }
+
+  // Only one process can poll a bot token. Keep local API from fighting Render.
+  const pollingOptIn = process.env.TELEGRAM_BOT_POLLING === 'true';
+  const pollingOptOut = process.env.TELEGRAM_BOT_POLLING === 'false';
+  const shouldPoll =
+    pollingOptIn || (process.env.NODE_ENV === 'production' && !pollingOptOut);
+  if (!shouldPoll) {
+    console.warn(
+      '⚠️  Telegram bot polling skipped (local). Render should poll instead. Set TELEGRAM_BOT_POLLING=true to enable locally.'
+    );
     return null;
   }
 
@@ -102,6 +120,7 @@ export function startTelegramBot() {
   });
 
   console.log('🤖 Telegram bot started (polling)');
+  console.log(`🎮 Mini App URL: ${getFrontendBaseUrl()}`);
   return bot;
 }
 
