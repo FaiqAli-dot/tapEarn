@@ -40,12 +40,14 @@ const userSchema = new mongoose.Schema({
   
   // Referral system
   referredBy: String,
+  referrerId: { type: String, default: null, index: true },
   referrals: [{
     userId: String,
     username: String,
     joinedAt: { type: Date, default: Date.now }
   }],
   referralCode: { type: String, unique: true },
+  hasCompletedFirstPayment: { type: Boolean, default: false },
   
   // Wallet integration
   walletAddress: String,

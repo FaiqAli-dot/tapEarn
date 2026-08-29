@@ -1,8 +1,8 @@
 import express from 'express';
-import { 
-  getUser, 
-  updateUser, 
-  handleTap, 
+import {
+  getUser,
+  updateUser,
+  handleTap,
   completeDailyTask,
   purchaseUpgrade,
   getUserGameState,
@@ -10,16 +10,16 @@ import {
   getAvailableUpgrades,
   resetDailyTasks,
   getLeaderboard,
+  getUserRank,
   syncTaps
 } from '../controllers/userController.js';
 import { requireAuth } from '../middleware/auth.js';
+import { tapRateLimiter } from '../middleware/rateLimiter.js';
 
 const router = express.Router();
 
-// All user routes require a verified session (JWT from /api/auth/*)
 router.use(requireAuth);
 
-// Current user profile
 router.get('/me', async (req, res) => {
   try {
     const user = await getUser(req.telegramId);
@@ -29,11 +29,9 @@ router.get('/me', async (req, res) => {
   }
 });
 
-// Ensure / refresh user after auth (identity comes from JWT only)
 router.get('/init', async (req, res) => {
   try {
     const user = await getUser(req.telegramId);
-    const frontendUrl = (process.env.FRONTEND_URL || '').replace(/\/$/, '');
     const botUsername = (process.env.TELEGRAM_BOT_USERNAME || '').replace(/^@/, '');
 
     res.json({
@@ -41,16 +39,14 @@ router.get('/init', async (req, res) => {
       data: user,
       referralLink: botUsername
         ? `https://t.me/${botUsername}?start=ref_${user.referralCode}`
-        : `${frontendUrl}?start=ref_${user.referralCode}`
+        : null
     });
   } catch (error) {
-    console.error('Error initializing user:', error);
     res.status(500).json({ success: false, error: 'Failed to initialize user' });
   }
 });
 
-// Handle tap action
-router.post('/tap', async (req, res) => {
+router.post('/tap', tapRateLimiter, async (req, res) => {
   try {
     const result = await handleTap(req.telegramId);
     res.json({ success: true, ...result });
@@ -59,14 +55,12 @@ router.post('/tap', async (req, res) => {
   }
 });
 
-// Handle batched taps sync
-router.post('/sync-taps', async (req, res) => {
+router.post('/sync-taps', tapRateLimiter, async (req, res) => {
   try {
     const { tapCount } = req.body;
     if (tapCount === undefined || tapCount < 0) {
       return res.status(400).json({ success: false, error: 'Valid tap count is required' });
     }
-    
     const result = await syncTaps(req.telegramId, tapCount);
     res.json({ success: true, ...result });
   } catch (error) {
@@ -74,7 +68,6 @@ router.post('/sync-taps', async (req, res) => {
   }
 });
 
-// Update user data (non-economy profile fields only — economy lockdown is Phase 3)
 router.patch('/update', async (req, res) => {
   try {
     const user = await updateUser(req.telegramId, req.body);
@@ -84,7 +77,6 @@ router.patch('/update', async (req, res) => {
   }
 });
 
-// Get user game state
 router.get('/game-state', async (req, res) => {
   try {
     const gameState = await getUserGameState(req.telegramId);
@@ -94,9 +86,14 @@ router.get('/game-state', async (req, res) => {
   }
 });
 
-// Update user game state
 router.post('/game-state', async (req, res) => {
   try {
+    if (req.body.points !== undefined || req.body.totalTaps !== undefined) {
+      return res.status(400).json({
+        success: false,
+        error: 'points and totalTaps cannot be set by the client'
+      });
+    }
     const result = await updateUserGameState(req.telegramId, req.body);
     res.json({ success: true, ...result });
   } catch (error) {
@@ -104,14 +101,12 @@ router.post('/game-state', async (req, res) => {
   }
 });
 
-// Complete daily task
 router.post('/complete-task', async (req, res) => {
   try {
     const { taskId } = req.body;
     if (!taskId) {
       return res.status(400).json({ success: false, error: 'Task ID is required' });
     }
-    
     const result = await completeDailyTask(req.telegramId, taskId);
     res.json({ success: true, ...result });
   } catch (error) {
@@ -119,22 +114,19 @@ router.post('/complete-task', async (req, res) => {
   }
 });
 
-// Purchase upgrade
 router.post('/purchase-upgrade', async (req, res) => {
   try {
-    const { upgradeId, cost } = req.body;
-    if (!upgradeId || cost === undefined) {
-      return res.status(400).json({ success: false, error: 'Upgrade ID and cost are required' });
+    const { upgradeId } = req.body;
+    if (!upgradeId) {
+      return res.status(400).json({ success: false, error: 'Upgrade ID is required' });
     }
-    
-    const result = await purchaseUpgrade(req.telegramId, upgradeId, cost);
+    const result = await purchaseUpgrade(req.telegramId, upgradeId);
     res.json({ success: true, ...result });
   } catch (error) {
     res.status(400).json({ success: false, error: error.message });
   }
 });
 
-// Get available upgrades
 router.get('/upgrades', async (req, res) => {
   try {
     const upgrades = await getAvailableUpgrades(req.telegramId);
@@ -144,7 +136,6 @@ router.get('/upgrades', async (req, res) => {
   }
 });
 
-// Reset daily tasks
 router.post('/reset-daily-tasks', async (req, res) => {
   try {
     const result = await resetDailyTasks(req.telegramId);
@@ -154,12 +145,13 @@ router.post('/reset-daily-tasks', async (req, res) => {
   }
 });
 
-// Get leaderboard (authenticated to reduce abuse)
 router.get('/leaderboard', async (req, res) => {
   try {
-    const limit = parseInt(req.query.limit) || 10;
-    const leaderboard = await getLeaderboard(limit);
-    res.json({ success: true, data: leaderboard });
+    const limit = parseInt(req.query.limit, 10) || 10;
+    const type = req.query.type || 'points';
+    const leaderboard = await getLeaderboard(type, limit);
+    const myRank = await getUserRank(req.telegramId, type);
+    res.json({ success: true, data: leaderboard, myRank });
   } catch (error) {
     res.status(500).json({ success: false, error: 'Failed to fetch leaderboard' });
   }
