@@ -11,7 +11,10 @@ import {
   resetDailyTasks,
   getLeaderboard,
   getUserRank,
-  syncTaps
+  syncTaps,
+  getEngagement,
+  completeQuest,
+  claimQuestBonus
 } from '../controllers/userController.js';
 import { requireAuth } from '../middleware/auth.js';
 import { tapRateLimiter } from '../middleware/rateLimiter.js';
@@ -88,10 +91,15 @@ router.get('/game-state', async (req, res) => {
 
 router.post('/game-state', async (req, res) => {
   try {
-    if (req.body.points !== undefined || req.body.totalTaps !== undefined) {
+    if (
+      req.body.points !== undefined ||
+      req.body.totalTaps !== undefined ||
+      req.body.xp !== undefined ||
+      req.body.level !== undefined
+    ) {
       return res.status(400).json({
         success: false,
-        error: 'points and totalTaps cannot be set by the client'
+        error: 'Economy fields cannot be set by the client'
       });
     }
     const result = await updateUserGameState(req.telegramId, req.body);
@@ -109,6 +117,33 @@ router.post('/complete-task', async (req, res) => {
     }
     const result = await completeDailyTask(req.telegramId, taskId);
     res.json({ success: true, ...result });
+  } catch (error) {
+    res.status(400).json({ success: false, error: error.message });
+  }
+});
+
+router.get('/engagement', async (req, res) => {
+  try {
+    const data = await getEngagement(req.telegramId);
+    res.json({ success: true, data });
+  } catch (error) {
+    res.status(404).json({ success: false, error: error.message });
+  }
+});
+
+router.post('/quests/:id/complete', async (req, res) => {
+  try {
+    const result = await completeQuest(req.telegramId, req.params.id);
+    res.json(result);
+  } catch (error) {
+    res.status(400).json({ success: false, error: error.message });
+  }
+});
+
+router.post('/quests/claim-all-primary-bonus', async (req, res) => {
+  try {
+    const result = await claimQuestBonus(req.telegramId);
+    res.json(result);
   } catch (error) {
     res.status(400).json({ success: false, error: error.message });
   }

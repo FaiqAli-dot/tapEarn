@@ -43,15 +43,19 @@ const DEFAULT_GAME_STATE: GameState = {
 function normalizeGameState(raw: Partial<GameState>): GameState {
   const lastActive = raw.lastActive
   const lastActiveMs =
-    typeof lastActive === 'string' || lastActive instanceof Date
+    typeof lastActive === 'string'
       ? new Date(lastActive).getTime()
-      : Number(lastActive) || Date.now()
+      : typeof lastActive === 'number'
+      ? lastActive
+      : Date.now()
 
   const lastDailyReset = raw.lastDailyReset
   const lastDailyResetMs =
-    typeof lastDailyReset === 'string' || lastDailyReset instanceof Date
+    typeof lastDailyReset === 'string'
       ? new Date(lastDailyReset).getTime()
-      : Number(lastDailyReset) || Date.now()
+      : typeof lastDailyReset === 'number'
+      ? lastDailyReset
+      : Date.now()
 
   return {
     ...DEFAULT_GAME_STATE,
@@ -142,6 +146,8 @@ export const useGameState = (userId?: string) => {
       const result = await apiService.syncTaps(tapsToSync)
       setUnsyncedTaps((prev) => Math.max(0, prev - tapsToSync))
       applyServerTapResult(result)
+      const stateResult = await apiService.getGameState()
+      loadGameState(stateResult.data)
     } catch (error) {
       console.error('Failed to sync taps:', error)
     } finally {
@@ -216,23 +222,42 @@ export const useGameState = (userId?: string) => {
   const completeDailyTask = useCallback(async (taskId: string) => {
     try {
       const result = await apiService.completeDailyTask(taskId)
-      const completedTask = result.dailyTasks?.find((t: DailyTask) => t.id === taskId)
-      const pointsEarned = completedTask?.points || 0
-      showNotification(`🎉 Task completed! +${pointsEarned} points earned!`, 'success')
-      setGameState((prev) => ({
-        ...prev,
-        dailyTasks: result.dailyTasks || prev.dailyTasks,
-        points: result.points,
-      }))
+      const quest = result.dailyTasks?.find((t: DailyTask) => t.id === taskId)
+      const yp = quest?.ypReward ?? quest?.points ?? 0
+      const xp = quest?.xpReward ?? 0
+      showNotification(`Quest complete! +${yp} YP +${xp} XP`, 'success')
+      if (result.levelUp) {
+        setTimeout(
+          () => showNotification(`Level up! Now level ${result.levelUp.to}`, 'info'),
+          500
+        )
+      }
+      if (result.allPrimaryBonus && !result.allPrimaryBonus.duplicate) {
+        setTimeout(
+          () =>
+            showNotification(
+              `All quests bonus! +${result.allPrimaryBonus.ypReward} YP`,
+              'success'
+            ),
+          800
+        )
+      }
+      const stateResult = await apiService.getGameState()
+      loadGameState(stateResult.data)
     } catch (error: any) {
       console.error('Complete daily task failed:', error)
-      showNotification(error?.message || '❌ Failed to complete task.', 'error')
+      showNotification(error?.message || 'Failed to claim quest.', 'error')
     }
-  }, [])
+  }, [loadGameState])
 
-  const applyCampaignReward = useCallback((points: number) => {
-    setGameState((prev) => ({ ...prev, points }))
-  }, [])
+  const applyCampaignReward = useCallback(async () => {
+    try {
+      const stateResult = await apiService.getGameState()
+      loadGameState(stateResult.data)
+    } catch (error) {
+      console.error('Failed to refresh after campaign:', error)
+    }
+  }, [loadGameState])
 
   const purchaseUpgrade = useCallback(async (upgradeId: string) => {
     try {

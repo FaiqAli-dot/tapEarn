@@ -71,7 +71,8 @@ export const VIDEO_CODES = {
 
 // Helper function to get video config by type and category
 export const getVideoConfig = (type: 'youtube' | 'direct', category: string) => {
-  return VIDEO_CONFIG[type]?.[category] || VIDEO_CONFIG.youtube.daily
+  const group = VIDEO_CONFIG[type] as Record<string, typeof VIDEO_CONFIG.youtube.daily>
+  return group?.[category] || VIDEO_CONFIG.youtube.daily
 }
 
 // Helper function to get video code by video ID

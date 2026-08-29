@@ -2,6 +2,7 @@ import User from '../models/User.js';
 import Payment from '../models/Payment.js';
 import ReferralReward from '../models/ReferralReward.js';
 import { awardPoints } from './pointsService.js';
+import { onReferralSuccess } from './questService.js';
 
 const REFERRAL_COMMISSION_RATE = 0.5;
 
@@ -46,6 +47,8 @@ export async function applyReferralOnSignup(newUser, referralCode) {
     });
     await referrer.save();
   }
+
+  await onReferralSuccess(referrer.telegramId);
 
   return { applied: true, referrerId: referrer.telegramId };
 }

@@ -160,7 +160,11 @@ function App() {
                   exit={{ opacity: 0, y: -20 }}
                   transition={{ duration: 0.3 }}
                 >
-                  <HomeScreen gameState={gameState} onTap={tap} />
+                  <HomeScreen
+                    gameState={gameState}
+                    onTap={tap}
+                    onQuestClaimed={refreshGameState}
+                  />
                 </motion.div>
               }
             />

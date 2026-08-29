@@ -13,6 +13,8 @@
     "mobile": "node setup-mobile.js && npm start",
     "stop": "pkill -f \"node src/index.js\" && pkill -f \"vite\" && echo \"Servers stopped\"",
     "restart": "npm run stop && sleep 2 && npm run start",
+    "typecheck": "tsc --noEmit",
+    "lint": "tsc --noEmit",
     "build": "vite build",
     "build:pages": "GITHUB_PAGES=true vite build",
     "preview": "vite preview",

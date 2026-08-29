@@ -1,8 +1,21 @@
 import User from '../models/User.js';
 import { applyReferralOnSignup } from '../services/referralService.js';
 import { processSingleTap, processTapBatch } from '../services/clickService.js';
-import { awardPoints } from '../services/pointsService.js';
 import { getLeaderboardByType, getUserRank } from '../services/leaderboardService.js';
+import {
+  ensureDailyQuests,
+  getQuestStatus,
+  claimQuest,
+  claimAllPrimaryBonus
+} from '../services/questService.js';
+import {
+  getEngagementData,
+  ensureEngagementState
+} from '../services/engagementService.js';
+import { buildXpSummary } from '../services/xpService.js';
+import { buildStreakSummary } from '../services/streakService.js';
+import { buildMilestoneSummary } from '../services/milestoneService.js';
+import { getUtcDateString } from '../utils/dateUtils.js';
 
 const ALLOWED_PROFILE_FIELDS = ['username', 'firstName', 'lastName', 'walletAddress', 'walletConnected'];
 
@@ -25,47 +38,18 @@ const getOrCreateUser = async (telegramId, userData = {}) => {
         await user.save();
       }
     } else {
-      const now = new Date();
-      const lastReset = user.lastDailyReset ? new Date(user.lastDailyReset) : new Date(0);
-      const daysSinceReset = Math.floor((now - lastReset) / (1000 * 60 * 60 * 24));
+      const today = getUtcDateString();
+      const lastReset = user.lastDailyReset
+        ? getUtcDateString(new Date(user.lastDailyReset))
+        : null;
 
-      if (daysSinceReset >= 1) {
+      if (lastReset !== today) {
         user.resetDailyTasks();
         await user.save();
       }
 
-      if (!user.dailyTasks || user.dailyTasks.length === 0) {
-        user.dailyTasks = [
-          {
-            id: 'daily_login',
-            title: 'Daily Login',
-            description: 'Log in to earn bonus points',
-            points: 50,
-            completed: false,
-            type: 'login'
-          },
-          {
-            id: 'watch video naa',
-            title: 'Watch Video',
-            description: 'Watch our featured video',
-            points: 150,
-            completed: false,
-            type: 'youtube',
-            url: 'https://www.youtube.com/watch?v=pmog2cABaJk&t=2595s&ab_channel=JamalRoomi'
-          },
-          {
-            id: 'streak_bonus',
-            title: '7-Day Streak',
-            description: 'Maintain daily login for 7 days',
-            points: 500,
-            completed: false,
-            type: 'streak'
-          }
-        ];
-        await user.save();
-      }
-
-      // Referrer is permanent — ignore referral code on re-auth for existing users
+      ensureDailyQuests(user);
+      await user.save();
     }
 
     return user;
@@ -103,28 +87,16 @@ const handleTap = async (telegramId) => processSingleTap(telegramId);
 const syncTaps = async (telegramId, tapCount) => processTapBatch(telegramId, tapCount);
 
 const completeDailyTask = async (telegramId, taskId) => {
-  const user = await User.findOne({ telegramId });
-  if (!user) throw new Error('User not found');
-
-  const task = user.dailyTasks.find((t) => t.id === taskId);
-  if (!task) throw new Error('Task not found or already completed');
-  if (task.completed) throw new Error('Task not found or already completed');
-
-  task.completed = true;
-  task.completedAt = new Date();
-  await user.save();
-
-  const pointType = task.type === 'streak' ? 'DAILY_STREAK' : 'VIDEO';
-  const result = await awardPoints(telegramId, task.points, pointType, {
-    referenceId: `daily-${taskId}-${user.lastDailyReset?.toISOString?.() || 'current'}`,
-    description: `Daily task: ${task.title}`
-  });
-
+  const result = await claimQuest(telegramId, taskId);
   return {
     success: true,
     points: result.points,
-    dailyTasks: user.dailyTasks,
-    message: 'Task completed successfully'
+    xp: result.xp,
+    level: result.level,
+    levelUp: result.levelUp,
+    allPrimaryBonus: result.allPrimaryBonus,
+    dailyTasks: result.dailyTasks,
+    message: 'Quest claimed successfully'
   };
 };
 
@@ -157,19 +129,16 @@ const purchaseUpgrade = async (telegramId, upgradeId) => {
 };
 
 const getUserGameState = async (telegramId) => {
+  await ensureEngagementState(telegramId);
   const user = await User.findOne({ telegramId });
   if (!user) throw new Error('User not found');
 
-  const now = new Date();
-  const lastReset = user.lastDailyReset ? new Date(user.lastDailyReset) : new Date(0);
-  const daysSinceReset = Math.floor((now - lastReset) / (1000 * 60 * 60 * 24));
-
-  if (daysSinceReset >= 1) {
-    user.resetDailyTasks();
-    await user.save();
-  }
-
   const currentEnergy = user.calculateCurrentEnergy();
+  const questStatus = getQuestStatus(user);
+  const xp = buildXpSummary(user);
+  const streak = buildStreakSummary(user);
+  const milestones = buildMilestoneSummary(user);
+  const myRank = await getUserRank(telegramId, 'points');
 
   return {
     points: user.points,
@@ -184,12 +153,22 @@ const getUserGameState = async (telegramId) => {
     offlineEarnings: user.offlineEarnings,
     referralEarnings: user.referralEarnings,
     lastActive: user.lastActive,
-    dailyTasks: user.dailyTasks,
+    dailyTasks: questStatus.quests,
     lastDailyReset: user.lastDailyReset,
     referralCode: user.referralCode,
     referralCount: user.referrals.length,
     walletConnected: user.walletConnected,
-    walletAddress: user.walletAddress
+    walletAddress: user.walletAddress,
+    engagement: {
+      quests: questStatus,
+      xp,
+      streak,
+      milestones,
+      leaderboard: {
+        rank: myRank?.rank ?? null,
+        score: myRank?.score ?? user.points
+      }
+    }
   };
 };
 
@@ -198,6 +177,15 @@ const ALLOWED_GAME_STATE_FIELDS = ['walletConnected', 'walletAddress'];
 const updateUserGameState = async (telegramId, gameState) => {
   const user = await User.findOne({ telegramId });
   if (!user) throw new Error('User not found');
+
+  if (
+    gameState.points !== undefined ||
+    gameState.totalTaps !== undefined ||
+    gameState.xp !== undefined ||
+    gameState.level !== undefined
+  ) {
+    throw new Error('Economy fields are server-authoritative');
+  }
 
   for (const key of ALLOWED_GAME_STATE_FIELDS) {
     if (gameState[key] !== undefined) {
@@ -224,15 +212,28 @@ const resetDailyTasks = async (telegramId) => {
   if (!user) throw new Error('User not found');
   user.resetDailyTasks();
   await user.save();
+  const questStatus = getQuestStatus(user);
   return {
     success: true,
-    dailyTasks: user.dailyTasks,
-    message: 'Daily tasks reset successfully'
+    dailyTasks: questStatus.quests,
+    message: 'Daily quests reset successfully'
   };
 };
 
 const getLeaderboard = async (type = 'points', limit = 10) =>
   getLeaderboardByType(type, limit);
+
+const getEngagement = async (telegramId) => getEngagementData(telegramId);
+
+const completeQuest = async (telegramId, questId) => {
+  const result = await claimQuest(telegramId, questId);
+  return { success: true, ...result };
+};
+
+const claimQuestBonus = async (telegramId) => {
+  const result = await claimAllPrimaryBonus(telegramId);
+  return { success: true, ...result };
+};
 
 export {
   getOrCreateUser,
@@ -247,5 +248,8 @@ export {
   resetDailyTasks,
   getLeaderboard,
   getUserRank,
-  syncTaps
+  syncTaps,
+  getEngagement,
+  completeQuest,
+  claimQuestBonus
 };

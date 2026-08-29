@@ -7,7 +7,8 @@
   "scripts": {
     "start": "node src/index.js",
     "dev": "nodemon src/index.js",
-    "build": "tsc",
+    "build": "node --check src/index.js",
+    "typecheck": "node --check src/index.js",
     "deploy": "npm run build && npm start",
     "setup": "node edit-env.js",
     "init-video-codes": "node scripts/initVideoCodes.js",

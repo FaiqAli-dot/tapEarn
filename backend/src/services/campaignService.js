@@ -1,6 +1,8 @@
 import Campaign from '../models/Campaign.js';
 import CampaignCompletion from '../models/CampaignCompletion.js';
 import { awardPoints } from './pointsService.js';
+import { awardXp } from './xpService.js';
+import { onCampaignCompleted, onPointsEarned } from './questService.js';
 
 function deriveStatus(campaign) {
   if (campaign.status === 'INACTIVE') return 'INACTIVE';
@@ -106,6 +108,15 @@ export async function completeCampaign(userId, campaignId) {
     referenceId: String(campaign._id),
     description: `Campaign: ${campaign.title}`
   });
+
+  const campaignXp = campaign.rewardPoints >= 500 ? 100 : 50;
+  await awardXp(userId, campaignXp, 'CAMPAIGN', {
+    referenceId: String(campaign._id),
+    description: `Campaign XP: ${campaign.title}`
+  });
+
+  await onCampaignCompleted(userId);
+  await onPointsEarned(userId, campaign.rewardPoints);
 
   return {
     duplicate: false,

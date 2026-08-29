@@ -1,5 +1,6 @@
 import User from '../models/User.js';
 import { awardPoints } from './pointsService.js';
+import { onTaps, onPointsEarned } from './questService.js';
 
 const MAX_TAPS_PER_REQUEST = 100;
 const MIN_TAP_INTERVAL_MS = 50;
@@ -82,6 +83,9 @@ export async function processSingleTap(telegramId) {
     description: 'Single tap'
   });
 
+  await onTaps(telegramId, 1);
+  await onPointsEarned(telegramId, pointsEarned);
+
   const refreshed = await User.findOne({ telegramId });
 
   return {
@@ -147,6 +151,9 @@ export async function processTapBatch(telegramId, requestedTapCount) {
     referenceId: `sync-${startTaps + 1}-${tapCount}`,
     description: `Synced ${tapCount} taps`
   });
+
+  await onTaps(telegramId, tapCount);
+  await onPointsEarned(telegramId, pointsEarned);
 
   const refreshed = await User.findOne({ telegramId });
 
