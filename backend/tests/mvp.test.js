@@ -36,6 +36,7 @@ before(async () => {
   process.env.ADMIN_TELEGRAM_IDS = '999';
   process.env.PAYMENT_WEBHOOK_SECRET = 'test-webhook-secret';
   process.env.TAP_RATE_LIMIT_MAX = '1000';
+  process.env.RATE_LIMIT_MAX_REQUESTS = '100000';
 
   memoryServer = await MongoMemoryServer.create();
   await mongoose.connect(memoryServer.getUri('tapearn-test'));
@@ -217,7 +218,7 @@ describe('Campaign completion', () => {
     const campaign = await Campaign.create({
       type: 'VIDEO',
       title: 'Watch promo',
-      rewardPoints: 500,
+      rewardPoints: 250,
       status: 'ACTIVE',
       startDate: new Date(Date.now() - 1000)
     });
@@ -227,7 +228,7 @@ describe('Campaign completion', () => {
       .set(authHeader('700'));
 
     assert.equal(complete.status, 200);
-    assert.equal(complete.body.reward, 500);
+    assert.equal(complete.body.reward, 250);
 
     const dup = await request(app)
       .post(`/api/campaigns/${campaign._id}/complete`)
@@ -236,7 +237,7 @@ describe('Campaign completion', () => {
     assert.equal(dup.body.duplicate, true);
 
     const user = await User.findOne({ telegramId: '700' });
-    assert.equal(user.points, 500);
+    assert.equal(user.points, 250);
   });
 });
 

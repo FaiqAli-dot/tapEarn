@@ -1,5 +1,6 @@
 import User from '../models/User.js';
 import PointTransaction from '../models/PointTransaction.js';
+import { checkLifetimeMilestones } from './milestoneService.js';
 
 /**
  * Centralized, auditable points awarding.
@@ -59,10 +60,16 @@ export async function awardPoints(userId, amount, type, options = {}) {
 
   await user.save();
 
+  let milestones = [];
+  if (type !== 'LIFETIME_MILESTONE') {
+    milestones = await checkLifetimeMilestones(userId);
+  }
+
   return {
     duplicate: false,
     points: user.points,
-    transaction
+    transaction,
+    milestones
   };
 }
 

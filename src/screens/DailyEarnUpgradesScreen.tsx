@@ -21,7 +21,7 @@ interface DailyEarnUpgradesScreenProps {
   gameState: GameState
   onCompleteDailyTask: (taskId: string) => void
   onPurchaseUpgrade: (upgradeId: string) => void
-  onCampaignReward: (points: number) => void
+  onCampaignReward: () => void | Promise<void>
 }
 
 interface ServerUpgrade {
@@ -128,7 +128,7 @@ const DailyEarnUpgradesScreen: React.FC<DailyEarnUpgradesScreenProps> = ({
       const result = await apiService.completeCampaign(campaignId)
       setCompletedCampaignIds((prev) => new Set(prev).add(campaignId))
       if (result.points !== undefined) {
-        onCampaignReward(result.points)
+        await onCampaignReward()
       }
       if (result.duplicate) {
         showAlert('You already completed this campaign.')
@@ -165,8 +165,8 @@ const DailyEarnUpgradesScreen: React.FC<DailyEarnUpgradesScreenProps> = ({
   return (
     <div className="min-h-screen p-4">
       <div className="text-center mb-6">
-        <h1 className="text-2xl font-bold text-gray-800 mb-2">Earn & Upgrades</h1>
-        <p className="text-gray-600">Tasks, campaigns, and upgrades — rewards from the server</p>
+            <h1 className="text-2xl font-bold text-gray-800 mb-2">Earn & Upgrades</h1>
+        <p className="text-gray-600">Daily quests, campaigns, and upgrades</p>
       </div>
 
       <div className="flex bg-gray-100 rounded-xl p-1 mb-6">
@@ -199,45 +199,73 @@ const DailyEarnUpgradesScreen: React.FC<DailyEarnUpgradesScreenProps> = ({
             exit={{ opacity: 0, x: -20 }}
             className="space-y-4"
           >
-            {gameState.dailyTasks.map((task) => (
+            {gameState.dailyTasks.map((task) => {
+              const progress = task.requiredAmount
+                ? Math.min(
+                    100,
+                    Math.floor(((task.currentProgress ?? 0) / task.requiredAmount) * 100)
+                  )
+                : 0
+              return (
               <div key={task.id} className="tg-card p-4">
                 <div className="flex items-center justify-between">
-                  <div>
-                    <h3 className="font-semibold text-gray-800">{task.title}</h3>
+                  <div className="flex-1">
+                    <div className="flex items-center space-x-2">
+                      <h3 className="font-semibold text-gray-800">{task.title}</h3>
+                      {task.isPrimary === false && (
+                        <span className="text-xs bg-purple-100 text-purple-700 px-2 py-0.5 rounded-full">
+                          Bonus
+                        </span>
+                      )}
+                    </div>
                     <p className="text-sm text-gray-600">{task.description}</p>
+                    {!task.completed && task.requiredAmount && (
+                      <p className="text-xs text-gray-500 mt-1">
+                        Progress: {task.currentProgress ?? 0}/{task.requiredAmount}
+                      </p>
+                    )}
                   </div>
-                  <div className="text-right">
-                    <div className="text-lg font-bold text-blue-600">+{task.points}</div>
-                    <div className="text-xs text-gray-500">points</div>
+                  <div className="text-right flex-shrink-0 ml-2">
+                    <div className="text-lg font-bold text-blue-600">
+                      +{task.ypReward ?? task.points}
+                    </div>
+                    {(task.xpReward ?? 0) > 0 && (
+                      <div className="text-xs text-purple-600">+{task.xpReward} XP</div>
+                    )}
                   </div>
                 </div>
+                {!task.completed && task.requiredAmount && (
+                  <div className="h-1.5 bg-gray-200 rounded-full mt-2 overflow-hidden">
+                    <div
+                      className="h-full bg-blue-400 rounded-full transition-all"
+                      style={{ width: `${progress}%` }}
+                    />
+                  </div>
+                )}
                 <button
-                  onClick={() =>
-                    task.type === 'youtube' ? handleDailyVideoTask() : handleTaskComplete(task.id)
-                  }
-                  disabled={task.completed}
+                  onClick={() => handleTaskComplete(task.id)}
+                  disabled={task.completed || (!task.readyToClaim && !task.completed)}
                   className={`w-full mt-3 py-2 px-4 rounded-lg font-medium transition-all ${
                     task.completed
                       ? 'bg-green-100 text-green-700 cursor-not-allowed'
-                      : 'bg-blue-500 text-white hover:bg-blue-600'
+                      : task.readyToClaim
+                      ? 'bg-blue-500 text-white hover:bg-blue-600'
+                      : 'bg-gray-200 text-gray-500 cursor-not-allowed'
                   }`}
                 >
                   {task.completed ? (
                     <>
                       <CheckCircle className="w-4 h-4 inline mr-2" />
-                      Completed
+                      Claimed
                     </>
-                  ) : task.type === 'youtube' ? (
-                    <>
-                      <Play className="w-4 h-4 inline mr-2" />
-                      Watch Video
-                    </>
+                  ) : task.readyToClaim ? (
+                    'Claim Reward'
                   ) : (
-                    'Claim'
+                    'In Progress'
                   )}
                 </button>
               </div>
-            ))}
+            )})}
           </motion.div>
         )}
 

@@ -17,9 +17,12 @@ export interface GameState {
   referralEarnings: number
   lastActive: number
   
-  // Daily tasks
+  // Daily tasks / quests
   dailyTasks: DailyTask[]
   lastDailyReset: number
+
+  // Engagement loop (server-authoritative)
+  engagement?: EngagementData
   
   // Referrals
   referralCode: string
@@ -38,8 +41,72 @@ export interface DailyTask {
   points: number
   completed: boolean
   type: 'login' | 'youtube' | 'streak' | 'custom'
+  questType?: 'CLICK_COUNT' | 'CAMPAIGN_COMPLETION' | 'POINT_EARNINGS' | 'REFERRAL_SUCCESS' | 'DAILY_ACTIVITY'
+  difficulty?: 'easy' | 'medium' | 'hard' | 'bonus'
+  isPrimary?: boolean
+  requiredAmount?: number
+  currentProgress?: number
+  ypReward?: number
+  xpReward?: number
+  readyToClaim?: boolean
   url?: string
   completedAt?: number
+}
+
+export interface XpProgress {
+  current: number
+  required: number
+  percent: number
+}
+
+export interface EngagementXp {
+  xp: number
+  level: number
+  xpForNextLevel: number | null
+  progress: XpProgress
+}
+
+export interface EngagementStreak {
+  currentStreak: number
+  longestStreak: number
+  lastStreakActivityDate: string | null
+  streakMilestonesClaimed: number[]
+  achievements: string[]
+  nextMilestone: { days: number; ypReward: number } | null
+}
+
+export interface EngagementMilestones {
+  totalPointsEarned: number
+  claimed: number[]
+  progress: {
+    next: number | null
+    current: number
+    threshold: number
+    reward: number
+    percent: number
+  }
+  milestones: { threshold: number; reward: number }[]
+}
+
+export interface EngagementQuests {
+  quests: DailyTask[]
+  primaryCompleted: number
+  primaryTotal: number
+  primaryReady: number
+  allPrimaryComplete: boolean
+  canClaimAllPrimaryBonus: boolean
+  allPrimaryBonus: { ypReward: number; xpReward: number }
+}
+
+export interface EngagementData {
+  quests: EngagementQuests
+  xp: EngagementXp
+  streak: EngagementStreak
+  milestones: EngagementMilestones
+  leaderboard: {
+    rank: number | null
+    score: number
+  }
 }
 
 export interface Upgrade {

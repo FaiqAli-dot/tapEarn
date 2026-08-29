@@ -1,5 +1,6 @@
 import type {
   Campaign,
+  EngagementData,
   LeaderboardEntry,
   LeaderboardMyRank,
   LeaderboardType,
@@ -232,6 +233,21 @@ class ApiService {
       method: 'POST',
       body: JSON.stringify({ taskId }),
     });
+  }
+
+  async getEngagement(): Promise<EngagementData> {
+    const result = await this.request('/users/engagement');
+    return result.data;
+  }
+
+  async completeQuest(questId: string) {
+    return this.request(`/users/quests/${encodeURIComponent(questId)}/complete`, {
+      method: 'POST',
+    });
+  }
+
+  async claimAllPrimaryQuestBonus() {
+    return this.request('/users/quests/claim-all-primary-bonus', { method: 'POST' });
   }
 
   async purchaseUpgrade(upgradeId: string) {

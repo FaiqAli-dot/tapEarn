@@ -1,4 +1,5 @@
 import mongoose from 'mongoose';
+import { generateDailyQuests } from '../constants/quests.js';
 
 const userSchema = new mongoose.Schema({
   // Telegram user info
@@ -25,18 +26,53 @@ const userSchema = new mongoose.Schema({
   referralEarnings: { type: Number, default: 0 },
   lastActive: { type: Date, default: Date.now },
   
-  // Daily tasks
+  // Daily quests (upgraded from daily tasks)
   dailyTasks: [{
     id: String,
     title: String,
     description: String,
     points: Number,
     completed: { type: Boolean, default: false },
-    type: { type: String, enum: ['login', 'youtube', 'streak', 'custom'] },
+    type: { type: String, enum: ['login', 'youtube', 'streak', 'custom'], default: 'custom' },
+    questType: {
+      type: String,
+      enum: ['CLICK_COUNT', 'CAMPAIGN_COMPLETION', 'POINT_EARNINGS', 'REFERRAL_SUCCESS', 'DAILY_ACTIVITY']
+    },
+    difficulty: { type: String, enum: ['easy', 'medium', 'hard', 'bonus'] },
+    isPrimary: { type: Boolean, default: true },
+    requiredAmount: { type: Number, default: 1 },
+    currentProgress: { type: Number, default: 0 },
+    ypReward: Number,
+    xpReward: Number,
     url: String,
     completedAt: Date
   }],
   lastDailyReset: { type: Date, default: Date.now },
+  primaryQuestBonusClaimed: { type: Boolean, default: false },
+
+  // Daily activity counters (UTC day)
+  dailyStats: {
+    date: String,
+    taps: { type: Number, default: 0 },
+    pointsEarned: { type: Number, default: 0 },
+    campaignsCompleted: { type: Number, default: 0 },
+    referralsToday: { type: Number, default: 0 },
+    dailyCheckinAwarded: { type: Boolean, default: false }
+  },
+
+  // XP + Levels (progression only, not convertible to YP)
+  xp: { type: Number, default: 0 },
+  level: { type: Number, default: 1 },
+
+  // Streak
+  currentStreak: { type: Number, default: 0 },
+  longestStreak: { type: Number, default: 0 },
+  lastStreakActivityDate: String,
+  streakMilestonesClaimed: [{ type: Number }],
+  achievements: [String],
+
+  // Lifetime milestones
+  lifetimeMilestonesClaimed: [{ type: Number }],
   
   // Referral system
   referredBy: String,
@@ -84,35 +120,9 @@ userSchema.pre('save', async function(next) {
     this.referralCode = code;
   }
   
-  // Initialize daily tasks if empty (for both new and existing users)
+  // Initialize daily quests if empty (for both new and existing users)
   if (!this.dailyTasks || this.dailyTasks.length === 0) {
-    this.dailyTasks = [
-      {
-        id: 'daily_login',
-        title: 'Daily Login',
-        description: 'Log in to earn bonus points',
-        points: 50,
-        completed: false,
-        type: 'login'
-      },
-      {
-        id: 'watch video naa',
-        title: 'Watch Video',
-        description: 'Watch our featured video',
-        points: 150,
-        completed: false,
-        type: 'youtube',
-        url: 'https://www.youtube.com/watch?v=pmog2cABaJk&t=2595s&ab_channel=JamalRoomi'
-      },
-      {
-        id: 'streak_bonus',
-        title: '7-Day Streak',
-        description: 'Maintain daily login for 7 days',
-        points: 500,
-        completed: false,
-        type: 'streak'
-      }
-    ];
+    this.dailyTasks = generateDailyQuests();
   }
   
   next();
@@ -179,14 +189,19 @@ userSchema.methods.purchaseUpgrade = function(upgradeId, cost) {
   return true;
 };
 
-// Method to reset daily tasks
+// Method to reset daily quests
 userSchema.methods.resetDailyTasks = function() {
-  this.dailyTasks = this.dailyTasks.map(task => ({
-    ...task,
-    completed: false,
-    completedAt: null
-  }));
+  this.dailyTasks = generateDailyQuests();
   this.lastDailyReset = new Date();
+  this.primaryQuestBonusClaimed = false;
+  this.dailyStats = {
+    date: new Date().toISOString().slice(0, 10),
+    taps: 0,
+    pointsEarned: 0,
+    campaignsCompleted: 0,
+    referralsToday: 0,
+    dailyCheckinAwarded: false
+  };
   return this.dailyTasks;
 };
 
