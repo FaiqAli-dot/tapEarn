@@ -19,15 +19,17 @@ Ensure `backend/.env` has:
 NODE_ENV=development
 ALLOW_DEV_AUTH=true
 USE_MEMORY_MONGO=true
-JWT_SECRET=local-dev-jwt-secret-not-for-production
-FRONTEND_URL=http://localhost:5173
+JWT_SECRET=local-dev-jwt-secret-change-me
+FRONTEND_URL=http://localhost:3000
+TELEGRAM_BOT_TOKEN=<from @BotFather — never commit>
+TELEGRAM_BOT_USERNAME=YORZAEARNBOT
 ```
 
 Ensure root `.env` has:
 
 ```env
 VITE_API_BASE_URL=http://localhost:3001/api
-VITE_TELEGRAM_BOT_USERNAME=local_dev_bot
+VITE_TELEGRAM_BOT_USERNAME=YORZAEARNBOT
 ```
 
 ## Run
