@@ -8,6 +8,7 @@ import videoCodeRoutes from './routes/videoCodeRoutes.js';
 import authRoutes from './routes/authRoutes.js';
 import { startTelegramBot, stopTelegramBot } from './bot/telegramBot.js';
 import { requireAuth } from './middleware/auth.js';
+import buildCorsOptions from './config/cors.js';
 
 // Load environment variables
 dotenv.config();
@@ -16,10 +17,7 @@ const app = express();
 const PORT = process.env.PORT || 3001;
 
 // Middleware
-app.use(cors({
-  origin: process.env.FRONTEND_URL || true,
-  credentials: true
-}));
+app.use(cors(buildCorsOptions()));
 app.use(express.json());
 
 // Connect to MongoDB

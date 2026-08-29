@@ -1,0 +1,30 @@
+services:
+  - type: web
+    name: tapearn-api
+    runtime: node
+    rootDir: backend
+    plan: free
+    buildCommand: npm install
+    startCommand: npm start
+    healthCheckPath: /health
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: ALLOW_DEV_AUTH
+        value: false
+      - key: USE_MEMORY_MONGO
+        value: false
+      - key: TELEGRAM_BOT_USERNAME
+        value: YORZAEARNBOT
+      - key: FRONTEND_URL
+        value: https://faiqali-dot.github.io/tapEarn/
+      - key: FRONTEND_ORIGINS
+        value: https://faiqali-dot.github.io
+      - key: JWT_EXPIRES_IN
+        value: 7d
+      - key: TELEGRAM_BOT_TOKEN
+        sync: false
+      - key: JWT_SECRET
+        generateValue: true
+      - key: MONGODB_URI
+        sync: false
