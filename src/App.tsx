@@ -1,22 +1,20 @@
-import { useState, useEffect } from 'react'
+import React, { useState, useEffect } from 'react'
 import { Routes, Route, useLocation } from 'react-router-dom'
 import { useTonAddress } from '@tonconnect/ui-react'
 import { motion, AnimatePresence } from 'framer-motion'
 
-// Screens
 import HomeScreen from './screens/HomeScreen'
 import DailyEarnUpgradesScreen from './screens/DailyEarnUpgradesScreen'
 import ProfileScreen from './screens/ProfileScreen'
 import ConnectWalletScreen from './screens/ConnectWalletScreen'
 import InviteFriendsScreen from './screens/InviteFriendsScreen'
+import LeaderboardScreen from './screens/LeaderboardScreen'
 import VideoCodeAdmin from './components/VideoCodeAdmin'
 import ProtectedAdminRoute from './components/ProtectedAdminRoute'
 
-// Components
 import BottomNavigation from './components/BottomNavigation'
 import TopBar from './components/TopBar'
 
-// Hooks
 import { useGameState } from './hooks/useGameState'
 import { useTelegram } from './hooks/useTelegram'
 import { apiService } from './services/api'
@@ -30,9 +28,18 @@ function App() {
   const [currentUserId, setCurrentUserId] = useState<string | null>(null)
   const [authError, setAuthError] = useState<string | null>(null)
   const [isLoading, setIsLoading] = useState(true)
+  const [referralLink, setReferralLink] = useState<string | null>(null)
 
-  const { gameState, updateGameState, tap, completeDailyTask, purchaseUpgrade, setWalletConnection, refreshGameState } =
-    useGameState(currentUserId || undefined)
+  const {
+    gameState,
+    loadGameState,
+    tap,
+    completeDailyTask,
+    purchaseUpgrade,
+    setWalletConnection,
+    refreshGameState,
+    applyCampaignReward,
+  } = useGameState(currentUserId || undefined)
 
   useEffect(() => {
     if (!isReady) return
@@ -50,15 +57,14 @@ function App() {
         let telegramUserId: string | null = null
 
         if (initData) {
-          // Production path: verify initData on the server and get a JWT
           const authResult = await apiService.authenticateWithTelegram(initData, startParam)
           telegramUserId = authResult.user?.telegramId || null
-          console.log('✅ Authenticated via Telegram initData')
         } else {
-          // Local browser path: only works if backend ALLOW_DEV_AUTH=true
           const devUserId = urlUserId || user?.id?.toString()
           if (!devUserId) {
-            setAuthError('Open this app from Telegram, or pass ?userId=... with ALLOW_DEV_AUTH enabled on the backend.')
+            setAuthError(
+              'Open this app from Telegram, or pass ?userId=... with ALLOW_DEV_AUTH enabled on the backend.'
+            )
             setIsLoading(false)
             return
           }
@@ -69,10 +75,9 @@ function App() {
               username: user?.username || 'localuser',
               firstName: user?.firstName || 'Local',
               lastName: user?.lastName || 'User',
-              start: startParam
+              start: startParam,
             })
             telegramUserId = authResult.user?.telegramId || String(devUserId)
-            console.log('⚠️ Authenticated via DEV auth (not for production)')
           } catch (devAuthError: any) {
             setAuthError(
               devAuthError?.message ||
@@ -93,36 +98,10 @@ function App() {
         localStorage.setItem('current_user_id', telegramUserId)
 
         const initResult = await apiService.initUser()
-        console.log(`✅ User initialized - ${telegramUserId}`, initResult.referralLink)
+        setReferralLink(initResult.referralLink || null)
 
         const gameStateResult = await apiService.getGameState()
-        const backendGameState = gameStateResult.data
-
-        const now = Date.now()
-        const lastActiveMs =
-          typeof backendGameState.lastActive === 'string' || backendGameState.lastActive instanceof Date
-            ? new Date(backendGameState.lastActive).getTime()
-            : Number(backendGameState.lastActive) || now
-        const timeDiff = now - lastActiveMs
-        const hoursOffline = Math.min(
-          timeDiff / (1000 * 60 * 60),
-          backendGameState.offlineEarningMaxHours || 4
-        )
-
-        let finalState = { ...backendGameState, lastActive: now }
-
-        if (hoursOffline > 0) {
-          const offlinePoints = Math.floor(hoursOffline * (backendGameState.offlineEarningRate || 0))
-          if (offlinePoints > 0) {
-            finalState = {
-              ...finalState,
-              points: backendGameState.points + offlinePoints,
-              offlineEarnings: (backendGameState.offlineEarnings || 0) + offlinePoints
-            }
-          }
-        }
-
-        updateGameState(finalState)
+        loadGameState(gameStateResult.data)
       } catch (error: any) {
         console.error('Failed to initialize game:', error)
         setAuthError(error?.message || 'Failed to authenticate with the server.')
@@ -134,26 +113,11 @@ function App() {
     initGame()
   }, [isReady]) // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Save game state to localStorage whenever it changes - make it user-specific
-  useEffect(() => {
-    if (!isLoading && gameState && currentUserId) {
-      const timeoutId = setTimeout(() => {
-        localStorage.setItem(`tapEarnGameState_${currentUserId}`, JSON.stringify(gameState))
-      }, 1000)
-
-      return () => clearTimeout(timeoutId)
-    }
-  }, [gameState, isLoading, currentUserId])
-
   useEffect(() => {
     if (typeof window !== 'undefined') {
       ;(window as any).refreshGameState = refreshGameState
-      ;(window as any).logGameState = () => {
-        console.log('🎮 Current Game State:', gameState)
-        console.log('📋 Daily Tasks:', gameState?.dailyTasks)
-      }
     }
-  }, [refreshGameState, gameState])
+  }, [refreshGameState])
 
   if (isLoading) {
     return (
@@ -173,7 +137,7 @@ function App() {
           <h1 className="text-xl font-bold text-gray-800 mb-2">Sign-in required</h1>
           <p className="text-gray-600 mb-4">{authError}</p>
           <p className="text-sm text-gray-500">
-            Open TapEarn from your Telegram bot, or configure local DEV auth.
+            Open TapEarn from @YORZAEARNBOT, or configure local DEV auth.
           </p>
         </div>
       </div>
@@ -182,11 +146,7 @@ function App() {
 
   return (
     <div className="tg-app">
-      <TopBar
-        user={user}
-        gameState={gameState}
-        connected={connected}
-      />
+      <TopBar user={user} gameState={gameState} connected={connected} />
 
       <main className="pb-20">
         <AnimatePresence mode="wait">
@@ -217,6 +177,7 @@ function App() {
                     gameState={gameState}
                     onCompleteDailyTask={completeDailyTask}
                     onPurchaseUpgrade={purchaseUpgrade}
+                    onCampaignReward={applyCampaignReward}
                   />
                 </motion.div>
               }
@@ -231,6 +192,19 @@ function App() {
                   transition={{ duration: 0.3 }}
                 >
                   <ProfileScreen gameState={gameState} />
+                </motion.div>
+              }
+            />
+            <Route
+              path="/leaderboard"
+              element={
+                <motion.div
+                  initial={{ opacity: 0, y: 20 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  exit={{ opacity: 0, y: -20 }}
+                  transition={{ duration: 0.3 }}
+                >
+                  <LeaderboardScreen />
                 </motion.div>
               }
             />
@@ -259,14 +233,14 @@ function App() {
                   exit={{ opacity: 0, y: -20 }}
                   transition={{ duration: 0.3 }}
                 >
-                  <InviteFriendsScreen gameState={gameState} />
+                  <InviteFriendsScreen gameState={gameState} referralLink={referralLink} />
                 </motion.div>
               }
             />
             <Route
               path="/admin/video-codes"
               element={
-                <ProtectedAdminRoute allowedUserIds={['123456789']}>
+                <ProtectedAdminRoute>
                   <motion.div
                     initial={{ opacity: 0, y: 20 }}
                     animate={{ opacity: 1, y: 0 }}

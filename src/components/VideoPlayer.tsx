@@ -8,6 +8,8 @@ import { apiService } from '../services/api'
 interface VideoPlayerProps {
   videoUrl: string
   videoId: string
+  rewardPoints?: number
+  requireCodeVerification?: boolean
   onVideoComplete: (videoId: string) => void
   onClose: () => void
   isOpen: boolean
@@ -16,6 +18,8 @@ interface VideoPlayerProps {
 const VideoPlayer: React.FC<VideoPlayerProps> = ({
   videoUrl,
   videoId,
+  rewardPoints = 100,
+  requireCodeVerification = false,
   onVideoComplete,
   onClose,
   isOpen
@@ -72,23 +76,24 @@ const VideoPlayer: React.FC<VideoPlayerProps> = ({
       setShowCodeHint(false)
       setShowCodeOverlay(false)
       
-      // Fetch video code from database
-      const fetchVideoCode = async () => {
-        try {
-          const videoCode = await apiService.getVideoCode(videoId)
-          setCurrentVideoCode({
-            code: videoCode.code,
-            hint: videoCode.hint,
-            timeToShow: videoCode.timeToShow,
-            points: videoCode.points
-          })
-        } catch (error) {
-          console.error('Failed to fetch video code:', error)
-          // Use default values if fetch fails
+      if (requireCodeVerification) {
+        const fetchVideoCode = async () => {
+          try {
+            const videoCode = await apiService.getVideoCode(videoId)
+            setCurrentVideoCode({
+              code: videoCode.code,
+              hint: videoCode.hint,
+              timeToShow: videoCode.timeToShow,
+              points: videoCode.points
+            })
+          } catch (error) {
+            console.error('Failed to fetch video code:', error)
+          }
         }
+        fetchVideoCode()
+      } else {
+        setCurrentVideoCode((prev) => ({ ...prev, points: rewardPoints }))
       }
-      
-      fetchVideoCode()
       
       // Check if it's a YouTube URL
       const ytId = extractYouTubeId(videoUrl)
@@ -105,7 +110,7 @@ const VideoPlayer: React.FC<VideoPlayerProps> = ({
         }
       }
     }
-  }, [isOpen, videoUrl, videoId])
+  }, [isOpen, videoUrl, videoId, requireCodeVerification, rewardPoints])
 
   const startYouTubeSimulation = () => {
     // Simulate YouTube video watching progress
@@ -116,8 +121,8 @@ const VideoPlayer: React.FC<VideoPlayerProps> = ({
       setCurrentTime(progress * 60) // Assume 60 second video
       setDuration(60)
       
-      // Show code input at specified time
-      if (progress >= currentVideoCode?.timeToShow && !showCodeInput) {
+      // Show code input at specified time (admin-only verification flow)
+      if (requireCodeVerification && progress >= currentVideoCode?.timeToShow && !showCodeInput) {
         setShowCodeInput(true)
         setShowCodeHint(true)
         setShowCodeOverlay(true)
@@ -126,8 +131,7 @@ const VideoPlayer: React.FC<VideoPlayerProps> = ({
       
       if (progress >= MIN_WATCH_PERCENTAGE && !hasWatchedEnough) {
         setHasWatchedEnough(true)
-        // Only show reward button if code is correct
-        if (isCodeCorrect) {
+        if (requireCodeVerification ? isCodeCorrect : true) {
           setShowRewardButton(true)
         }
       }
@@ -146,19 +150,17 @@ const VideoPlayer: React.FC<VideoPlayerProps> = ({
           const progress = current / total
           setWatchProgress(progress)
           
-          // Show code input at specified time
-          if (progress >= currentVideoCode?.timeToShow && !showCodeInput) {
+          // Show code input at specified time (admin-only verification flow)
+          if (requireCodeVerification && progress >= currentVideoCode?.timeToShow && !showCodeInput) {
             setShowCodeInput(true)
             setShowCodeHint(true)
             setShowCodeOverlay(true)
             setTimeout(() => setShowCodeHint(false), 5000) // Hide hint after 5 seconds
           }
           
-          // Check if user has watched enough
           if (progress >= MIN_WATCH_PERCENTAGE && !hasWatchedEnough) {
             setHasWatchedEnough(true)
-            // Only show reward button if code is correct
-            if (isCodeCorrect) {
+            if (requireCodeVerification ? isCodeCorrect : true) {
               setShowRewardButton(true)
             }
           }
@@ -175,7 +177,7 @@ const VideoPlayer: React.FC<VideoPlayerProps> = ({
         clearInterval(progressInterval.current)
       }
     }
-  }, [isPlaying, hasWatchedEnough, isYouTube, showCodeInput, isCodeCorrect])
+  }, [isPlaying, hasWatchedEnough, isYouTube, showCodeInput, isCodeCorrect, requireCodeVerification])
 
   const handlePlayPause = () => {
     if (isYouTube) {
@@ -454,8 +456,8 @@ const VideoPlayer: React.FC<VideoPlayerProps> = ({
               )}
             </div>
 
-            {/* Code Verification Section */}
-            {showCodeInput && (
+            {/* Code Verification Section — admin JWT only */}
+            {requireCodeVerification && showCodeInput && (
               <motion.div
                 initial={{ opacity: 0, y: 20 }}
                 animate={{ opacity: 1, y: 0 }}
@@ -525,23 +527,25 @@ const VideoPlayer: React.FC<VideoPlayerProps> = ({
               </div>
               
               <div className="text-xs text-gray-500">
-                {hasWatchedEnough && isCodeCorrect ? (
+                {hasWatchedEnough && (!requireCodeVerification || isCodeCorrect) ? (
                   <span className="text-green-600 flex items-center">
                     <CheckCircle className="w-3 h-3 mr-1" />
-                    Video watched and code verified! You can now claim your reward.
+                    Video watched! You can claim your reward.
                   </span>
-                ) : hasWatchedEnough && !isCodeCorrect ? (
+                ) : hasWatchedEnough && requireCodeVerification && !isCodeCorrect ? (
                   <span className="text-orange-600 flex items-center">
                     <Key className="w-3 h-3 mr-1" />
                     Video watched! Please enter the code to claim your reward.
                   </span>
                 ) : (
                   <span>
-                    {isYouTube ? (
-                      "Watch the YouTube video and enter the code that appears to earn your reward."
-                    ) : (
-                      `Watch at least ${Math.round(MIN_WATCH_PERCENTAGE * 100)}% of the video and enter the code to claim your reward`
-                    )}
+                    {requireCodeVerification
+                      ? isYouTube
+                        ? 'Watch the video and enter the code that appears to earn your reward.'
+                        : `Watch at least ${Math.round(MIN_WATCH_PERCENTAGE * 100)}% of the video and enter the code to claim your reward`
+                      : isYouTube
+                      ? 'Watch the video to earn your reward.'
+                      : `Watch at least ${Math.round(MIN_WATCH_PERCENTAGE * 100)}% of the video to claim your reward`}
                   </span>
                 )}
               </div>
@@ -555,7 +559,7 @@ const VideoPlayer: React.FC<VideoPlayerProps> = ({
                   className="w-full bg-gradient-to-r from-green-500 to-green-600 text-white py-3 px-4 rounded-lg font-medium hover:from-green-600 hover:to-green-700 transition-all flex items-center justify-center space-x-2"
                 >
                   <CheckCircle className="w-5 h-5" />
-                  <span>Claim {currentVideoCode?.points || 100} Points Reward</span>
+                  <span>Claim {rewardPoints} Points Reward</span>
                 </button>
               </div>
             )}

@@ -1,7 +1,8 @@
-import React, { useState, useEffect } from 'react'
+import React, { useState } from 'react'
+import { Link } from 'react-router-dom'
 import { motion, AnimatePresence } from 'framer-motion'
 import { useTelegram } from '../hooks/useTelegram'
-import { Zap, Coins, Battery } from 'lucide-react'
+import { Zap, Coins, Battery, Trophy, Calendar } from 'lucide-react'
 import { GameState } from '../types/game'
 
 interface HomeScreenProps {
@@ -13,26 +14,6 @@ const HomeScreen: React.FC<HomeScreenProps> = ({ gameState, onTap }) => {
   const { hapticFeedback, notificationFeedback } = useTelegram()
   const [isTapping, setIsTapping] = useState(false)
   const [tapCount, setTapCount] = useState(0)
-  const [showOfflineEarnings, setShowOfflineEarnings] = useState(false)
-
-  // Check for offline earnings on mount
-  useEffect(() => {
-    const lastActive = localStorage.getItem('lastActive')
-    if (lastActive) {
-      const timeDiff = Date.now() - parseInt(lastActive)
-      const hoursOffline = Math.min(timeDiff / (1000 * 60 * 60), gameState.offlineEarningMaxHours)
-      
-      if (hoursOffline > 0) {
-        const offlinePoints = Math.floor(hoursOffline * gameState.offlineEarningRate)
-        if (offlinePoints > 0) {
-          setShowOfflineEarnings(true)
-          setTimeout(() => setShowOfflineEarnings(false), 5000)
-        }
-      }
-    }
-    
-    localStorage.setItem('lastActive', Date.now().toString())
-  }, [])
 
   const handleTap = () => {
     if (gameState.energy <= 0) {
@@ -60,25 +41,6 @@ const HomeScreen: React.FC<HomeScreenProps> = ({ gameState, onTap }) => {
 
   return (
     <div className="min-h-screen p-4 flex flex-col items-center justify-center">
-      {/* Offline Earnings Notification */}
-      <AnimatePresence>
-        {showOfflineEarnings && (
-          <motion.div
-            initial={{ opacity: 0, y: -50, scale: 0.8 }}
-            animate={{ opacity: 1, y: 0, scale: 1 }}
-            exit={{ opacity: 0, y: -50, scale: 0.8 }}
-            className="fixed top-20 left-4 right-4 bg-green-500 text-white p-4 rounded-xl shadow-lg z-50"
-          >
-            <div className="flex items-center justify-center space-x-2">
-              <Coins className="w-5 h-5" />
-              <span className="font-semibold">
-                Welcome back! You earned {Math.floor(gameState.offlineEarningRate * 4)} points while away!
-              </span>
-            </div>
-          </motion.div>
-        )}
-      </AnimatePresence>
-
       {/* Points Display */}
       <div className="text-center mb-8">
         <div className="flex items-center justify-center space-x-2 mb-2">
@@ -174,14 +136,14 @@ const HomeScreen: React.FC<HomeScreenProps> = ({ gameState, onTap }) => {
 
       {/* Quick Actions */}
       <div className="mt-8 space-y-3 w-full max-w-sm">
-        <button className="tg-button-secondary w-full flex items-center justify-center space-x-2">
-          <Zap className="w-5 h-5" />
-          <span>Upgrade Tap Power</span>
-        </button>
-        <button className="tg-button-secondary w-full flex items-center justify-center space-x-2">
-          <Coins className="w-5 h-5" />
-          <span>Claim Daily Bonus</span>
-        </button>
+        <Link to="/daily-earn" className="tg-button-secondary w-full flex items-center justify-center space-x-2">
+          <Calendar className="w-5 h-5" />
+          <span>Daily Tasks & Campaigns</span>
+        </Link>
+        <Link to="/leaderboard" className="tg-button-secondary w-full flex items-center justify-center space-x-2">
+          <Trophy className="w-5 h-5" />
+          <span>Leaderboard</span>
+        </Link>
       </div>
     </div>
   )
