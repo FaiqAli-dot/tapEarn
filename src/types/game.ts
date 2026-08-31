@@ -32,6 +32,8 @@ export interface GameState {
   // Wallet
   walletConnected: boolean
   walletAddress?: string
+  walletVerified?: boolean
+  walletVerifiedAt?: string
 }
 
 export interface DailyTask {

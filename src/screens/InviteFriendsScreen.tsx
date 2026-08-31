@@ -3,6 +3,7 @@ import { motion } from 'framer-motion'
 import { useTelegram } from '../hooks/useTelegram'
 import { GameState, Referral } from '../types/game'
 import { apiService } from '../services/api'
+import { tonExplorerTxUrl } from '../config/ton'
 import {
   Copy,
   Check,
@@ -11,6 +12,7 @@ import {
   ExternalLink,
   User,
   Loader2,
+  Coins,
 } from 'lucide-react'
 
 interface InviteFriendsScreenProps {
@@ -24,6 +26,8 @@ const InviteFriendsScreen: React.FC<InviteFriendsScreenProps> = ({ gameState, re
   const [referrals, setReferrals] = useState<Referral[]>([])
   const [referredBy, setReferredBy] = useState<string | null>(null)
   const [loading, setLoading] = useState(true)
+  const [tonPayouts, setTonPayouts] = useState<any[]>([])
+  const [subscriptions, setSubscriptions] = useState<any[]>([])
 
   const botUsername = (
     (import.meta as any).env?.VITE_TELEGRAM_BOT_USERNAME || 'YORZAEARNBOT'
@@ -39,6 +43,13 @@ const InviteFriendsScreen: React.FC<InviteFriendsScreenProps> = ({ gameState, re
         const user = result.data
         setReferrals(user.referrals || [])
         setReferredBy(user.referredBy || user.referrerId || null)
+        try {
+          const history = await apiService.getPaymentHistory()
+          setTonPayouts(history.data?.referralTonPayouts || [])
+          setSubscriptions(history.data?.subscriptions || [])
+        } catch {
+          /* payment history optional until wallet flow used */
+        }
       } catch (error) {
         console.error('Failed to load referral profile:', error)
       } finally {
@@ -188,10 +199,51 @@ const InviteFriendsScreen: React.FC<InviteFriendsScreenProps> = ({ gameState, re
         <div className="space-y-2 text-sm text-gray-600">
           <p>1. Share your Telegram deep link with friends.</p>
           <p>2. When they open @YORZAEARNBOT with your link, they are linked as your referral.</p>
-          <p>3. You earn referral rewards from their activity (one level only).</p>
+          <p>3. When they pay a testnet TON subscription, you receive 50% of net (after fees) — not YP.</p>
           <p>4. Referrer assignment is permanent and cannot be changed.</p>
         </div>
       </div>
+
+      {(tonPayouts.length > 0 || subscriptions.length > 0) && (
+        <div className="tg-card p-4 mt-4">
+          <h3 className="text-lg font-semibold text-gray-800 mb-3 flex items-center gap-2">
+            <Coins className="w-5 h-5 text-amber-600" />
+            TON Testnet Referral Payments
+          </h3>
+          {tonPayouts.length > 0 && (
+            <div className="space-y-2 mb-4">
+              <p className="text-xs text-gray-500">Referral TON payouts (separate from YP earnings)</p>
+              {tonPayouts.map((p) => (
+                <div key={p.id} className="p-3 bg-gray-50 rounded-lg text-sm">
+                  <div className="flex justify-between">
+                    <span>{(Number(p.amountNanoton) / 1e9).toFixed(4)} TON</span>
+                    <span className="text-xs font-medium">{p.status}</span>
+                  </div>
+                  {p.txHash && (
+                    <button
+                      className="text-blue-600 text-xs underline mt-1"
+                      onClick={() => window.open(p.explorerUrl || tonExplorerTxUrl(p.txHash), '_blank')}
+                    >
+                      Explorer
+                    </button>
+                  )}
+                </div>
+              ))}
+            </div>
+          )}
+          {subscriptions.length > 0 && (
+            <div className="space-y-2">
+              <p className="text-xs text-gray-500">Your subscription payments</p>
+              {subscriptions.slice(0, 5).map((s) => (
+                <div key={s.id} className="p-3 bg-gray-50 rounded-lg text-sm flex justify-between">
+                  <span>{(Number(s.grossAmountNanoton) / 1e9).toFixed(4)} TON gross</span>
+                  <span className="text-xs">{s.status}</span>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
     </div>
   )
 }

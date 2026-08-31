@@ -1,9 +1,26 @@
 import express from 'express';
 import { completePayment } from '../controllers/paymentController.js';
+import {
+  confirmPayment,
+  createPaymentIntent,
+  getPayment,
+  paymentHistory,
+  paymentQuote,
+  recordPayoutTxs,
+  submitPayment
+} from '../controllers/tonPaymentController.js';
 import { requireAuth } from '../middleware/auth.js';
 import { isAdminTelegramId } from '../middleware/adminAuth.js';
 
 const router = express.Router();
+
+router.get('/quote', requireAuth, paymentQuote);
+router.post('/intent', requireAuth, createPaymentIntent);
+router.get('/history', requireAuth, paymentHistory);
+router.get('/:id', requireAuth, getPayment);
+router.post('/:id/submit', requireAuth, submitPayment);
+router.post('/:id/confirm', requireAuth, confirmPayment);
+router.post('/:id/payouts', requireAuth, recordPayoutTxs);
 
 /**
  * Payment completion hook.

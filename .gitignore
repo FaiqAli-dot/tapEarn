@@ -80,7 +80,9 @@ dist
 
 # Gatsby files
 .cache/
-public
+public/*
+!public/icon.png
+!public/tonconnect-manifest.json
 
 # Storybook build outputs
 .out

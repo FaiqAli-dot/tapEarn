@@ -35,6 +35,7 @@ before(async () => {
   process.env.ALLOW_DEV_AUTH = 'true';
   process.env.ADMIN_TELEGRAM_IDS = '999';
   process.env.PAYMENT_WEBHOOK_SECRET = 'test-webhook-secret';
+  process.env.TON_NETWORK = 'testnet';
   process.env.TAP_RATE_LIMIT_MAX = '1000';
   process.env.RATE_LIMIT_MAX_REQUESTS = '100000';
 
