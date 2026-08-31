@@ -5,6 +5,10 @@
 
 #include "imports/stdlib.fc";
 
+int equal_slices(slice a, slice b) inline {
+    return equal_slice_bits(a, b);
+}
+
 const int op::pay_subscription = 0x591a2b3c;
 const int op::pause = 0x10;
 const int op::unpause = 0x11;
@@ -96,13 +100,19 @@ global cell processed_dict;
     slice signature = auth_slice~load_bits(512);
 
     throw_unless(error::expired, expiry > now());
-    throw_if(error::replay, processed_dict.int_dict_get?(256, payment_id));
+    (slice unused, int already_paid) = idict_get?(processed_dict, 256, payment_id);
+    throw_if(error::replay, already_paid);
     throw_unless(error::insufficient, msg_value >= gross);
 
-    ;; Signature over inner authorization (without op + signature)
-    slice auth_no_sig = in_msg_body;
-    auth_no_sig~load_uint(32 + 256 + 267 + 267 + 124 + 124 + 64);
-    throw_unless(error::bad_signature, check_signature(slice_hash(auth_no_sig), signature, signer_pubkey));
+    cell auth_cell = begin_cell()
+        .store_uint(payment_id, 256)
+        .store_slice(subscriber)
+        .store_slice(referrer)
+        .store_coins(gross)
+        .store_coins(fee_reserve)
+        .store_uint(expiry, 64)
+        .end_cell();
+    throw_unless(error::bad_signature, check_signature(cell_hash(auth_cell), signature, signer_pubkey));
 
     throw_unless(error::unauthorized, equal_slices(sender, subscriber));
 
@@ -129,13 +139,13 @@ global cell processed_dict;
     send_raw_message(msg_ref, 1);
     send_raw_message(msg_tre, 1);
 
-    processed_dict~set(256, payment_id, begin_cell().store_uint(1, 1).end_cell());
+    processed_dict~idict_set(256, payment_id, begin_cell().store_uint(1, 1).end_cell().begin_parse());
     save_data();
 }
 
 int get_payment_processed(int payment_id) method_id {
     load_data();
-    (int found, slice _) = processed_dict.int_dict_get?(256, payment_id);
+    (slice val, int found) = idict_get?(processed_dict, 256, payment_id);
     return found;
 }
 

@@ -1,0 +1,21 @@
+{
+  "name": "yorza-contracts",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "node scripts/compile.js",
+    "deploy": "node scripts/deploy-testnet.js",
+    "test": "node --test tests/*.test.js",
+    "test:split": "node --test tests/split.test.js"
+  },
+  "dependencies": {
+    "@ton-community/func-js": "^0.11.0",
+    "@ton/core": "^0.62.0",
+    "@ton/crypto": "^3.3.0",
+    "@ton/ton": "^15.2.1"
+  },
+  "devDependencies": {
+    "@ton/sandbox": "^0.28.0"
+  }
+}
