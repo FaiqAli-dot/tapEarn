@@ -151,6 +151,15 @@ export interface LeaderboardMyRank {
   score: number
 }
 
+export interface PointHistoryEntry {
+  id: string
+  amount: number
+  type: string
+  description: string
+  referenceId: string | null
+  createdAt: string
+}
+
 export type CampaignType = 'VIDEO' | 'SPONSORED_POST'
 
 export interface Campaign {

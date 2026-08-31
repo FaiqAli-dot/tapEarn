@@ -12,6 +12,7 @@ import {
   getEngagementData,
   ensureEngagementState
 } from '../services/engagementService.js';
+import { getPointHistory } from '../services/pointsService.js';
 import { buildXpSummary } from '../services/xpService.js';
 import { buildStreakSummary } from '../services/streakService.js';
 import { buildMilestoneSummary } from '../services/milestoneService.js';
@@ -241,6 +242,18 @@ const claimQuestBonus = async (telegramId) => {
   return { success: true, ...result };
 };
 
+const getPointHistoryForUser = async (telegramId, limit = 50) => {
+  const transactions = await getPointHistory(telegramId, limit);
+  return transactions.map((tx) => ({
+    id: tx._id,
+    amount: tx.amount,
+    type: tx.type,
+    description: tx.description,
+    referenceId: tx.referenceId,
+    createdAt: tx.createdAt
+  }));
+};
+
 export {
   getOrCreateUser,
   getUser,
@@ -257,5 +270,6 @@ export {
   syncTaps,
   getEngagement,
   completeQuest,
-  claimQuestBonus
+  claimQuestBonus,
+  getPointHistoryForUser
 };

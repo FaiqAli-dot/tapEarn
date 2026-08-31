@@ -124,7 +124,7 @@ function App() {
       <div className="tg-app flex items-center justify-center">
         <div className="text-center">
           <div className="animate-spin rounded-full h-16 w-16 border-b-2 border-blue-500 mx-auto mb-4"></div>
-          <p className="text-gray-600">Loading TapEarn...</p>
+          <p className="text-gray-600">Loading YORZA...</p>
         </div>
       </div>
     )
@@ -137,7 +137,7 @@ function App() {
           <h1 className="text-xl font-bold text-gray-800 mb-2">Sign-in required</h1>
           <p className="text-gray-600 mb-4">{authError}</p>
           <p className="text-sm text-gray-500">
-            Open TapEarn from @YORZAEARNBOT, or configure local DEV auth.
+            Open YORZA from @YORZAEARNBOT, or configure local DEV auth.
           </p>
         </div>
       </div>
