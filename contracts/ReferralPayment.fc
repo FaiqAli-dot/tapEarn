@@ -97,7 +97,13 @@ global cell processed_dict;
     int gross = auth_slice~load_coins();
     int fee_reserve = auth_slice~load_coins();
     int expiry = auth_slice~load_uint(64);
-    slice signature = auth_slice~load_bits(512);
+    slice signature = null();
+    if (auth_slice.slice_bits() >= 512) {
+        signature = auth_slice~load_bits(512);
+    } else {
+        slice sig_slice = auth_slice~load_ref().begin_parse();
+        signature = sig_slice~load_bits(512);
+    }
 
     throw_unless(error::expired, expiry > now());
     (slice unused, int already_paid) = idict_get?(processed_dict, 256, payment_id);

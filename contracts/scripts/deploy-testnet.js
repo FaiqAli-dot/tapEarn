@@ -3,14 +3,15 @@ import {
   beginCell,
   Cell,
   contractAddress,
+  external,
   internal,
   SendMode,
+  storeMessage,
   toNano,
-  TonClient,
-} from '@ton/ton';
-import { mnemonicNew, mnemonicToPrivateKey, sign } from '@ton/crypto';
+} from '@ton/core';
+import { mnemonicNew, mnemonicToPrivateKey, sign, keyPairFromSeed } from '@ton/crypto';
 import { WalletContractV4 } from '@ton/ton';
-import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'node:fs';
+import { readFileSync, writeFileSync, existsSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import crypto from 'node:crypto';
@@ -24,6 +25,8 @@ const OP_PAY_SUBSCRIPTION = 0x591a2b3c;
 const FEE_RESERVE_NANOTON = 50_000_000n;
 const GROSS_NANOTON = 100_000_000n; // 0.1 TON
 const TESTNET_RPC = 'https://testnet.toncenter.com/api/v2/jsonRPC';
+const TESTNET_REST = 'https://testnet.toncenter.com/api/v2';
+let lastRpcAt = 0;
 
 function log(msg) {
   console.log(`[deploy] ${msg}`);
@@ -42,19 +45,89 @@ async function sleep(ms) {
 }
 
 async function toncenter(method, params = {}) {
-  const res = await fetch(TESTNET_RPC, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ id: 1, jsonrpc: '2.0', method, params }),
-  });
+  const minGap = 1300;
+  const wait = Math.max(0, minGap - (Date.now() - lastRpcAt));
+  if (wait) await sleep(wait);
+
+  for (let attempt = 0; attempt < 15; attempt++) {
+    lastRpcAt = Date.now();
+    const res = await fetch(TESTNET_RPC, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ id: 1, jsonrpc: '2.0', method, params }),
+    });
+    const json = await res.json();
+
+    if (
+      res.status === 429 ||
+      json.code === 429 ||
+      json.result === 'Ratelimit exceed' ||
+      String(json.error || '').includes('Ratelimit')
+    ) {
+      const backoff = 1500 * (attempt + 1);
+      log(`Rate limited on ${method}, retrying in ${backoff}ms...`);
+      await sleep(backoff);
+      continue;
+    }
+
+    if (json.error) {
+      throw new Error(json.error.message || JSON.stringify(json.error));
+    }
+    if (json.ok === false) {
+      throw new Error(json.result || `RPC failed: ${method}`);
+    }
+    return json.result;
+  }
+
+  throw new Error(`Rate limit exceeded for ${method}`);
+}
+
+async function toncenterGet(path, query = {}) {
+  const minGap = 1300;
+  const wait = Math.max(0, minGap - (Date.now() - lastRpcAt));
+  if (wait) await sleep(wait);
+  lastRpcAt = Date.now();
+
+  const url = new URL(`${TESTNET_REST}/${path}`);
+  Object.entries(query).forEach(([k, v]) => url.searchParams.set(k, String(v)));
+  const res = await fetch(url);
   const json = await res.json();
-  if (json.error) throw new Error(json.error.message || JSON.stringify(json.error));
+  if (!json.ok) throw new Error(json.error || json.result || `GET ${path} failed`);
   return json.result;
 }
 
 async function getBalanceNano(address) {
-  const result = await toncenter('getAddressBalance', { address });
+  const result = await toncenterGet('getAddressBalance', { address });
   return BigInt(result);
+}
+
+async function getAccountState(address) {
+  return toncenterGet('getAddressInformation', { address });
+}
+
+async function getWalletSeqno(address) {
+  const info = await toncenter('getWalletInformation', { address });
+  return Number(info.seqno ?? 0);
+}
+
+async function sendExternalBoc(wallet, secretKey, messages, init) {
+  const seqno = await getWalletSeqno(wallet.address.toString({ bounceable: true, testOnly: true }));
+  const transfer = wallet.createTransfer({
+    seqno,
+    secretKey,
+    messages,
+    sendMode: SendMode.PAY_GAS_SEPARATELY,
+  });
+
+  const ext = external({
+    to: wallet.address,
+    init: seqno === 0 ? wallet.init : undefined,
+    body: transfer,
+  });
+
+  const boc = beginCell().store(storeMessage(ext)).endCell().toBoc().toString('base64');
+  await toncenter('sendBoc', { boc });
+  return { seqno };
 }
 
 async function loadOrCreateSecrets() {
@@ -160,15 +233,7 @@ function loadCompiledCode() {
 }
 
 function contractAddressFromInit(code, initData) {
-  const stateInit = beginCell()
-    .storeUint(0, 2)
-    .storeUint(0, 1)
-    .storeUint(1, 1)
-    .storeRef(code)
-    .storeRef(initData)
-    .storeUint(0, 1)
-    .endCell();
-  return contractAddress(0, stateInit);
+  return contractAddress(0, { code, data: initData });
 }
 
 function buildAuthBodyForContract({
@@ -190,9 +255,10 @@ function buildAuthBodyForContract({
     .endCell();
 
   const hash = authCell.hash();
-  const sig = sign(hash, Buffer.from(signerSeed, 'hex'));
+  const keyPair = keyPairFromSeed(Buffer.from(signerSeed, 'hex'));
+  const sig = sign(hash, keyPair.secretKey);
 
-  return beginCell()
+  const authPart = beginCell()
     .storeUint(OP_PAY_SUBSCRIPTION, 32)
     .storeUint(paymentId, 256)
     .storeAddress(subscriber)
@@ -200,62 +266,57 @@ function buildAuthBodyForContract({
     .storeCoins(gross)
     .storeCoins(feeReserve)
     .storeUint(expiry, 64)
-    .storeBuffer(sig)
+    .endCell();
+
+  const sigPart = beginCell().storeUint(BigInt(`0x${sig.toString('hex')}`), 512).endCell();
+
+  return beginCell()
+    .storeSlice(authPart.asSlice())
+    .storeRef(sigPart)
     .endCell();
 }
 
-async function deployContract(client, secrets, code, initData, address) {
+async function isContractDeployed(addressStr) {
+  try {
+    const result = await toncenter('runGetMethod', {
+      address: addressStr,
+      method: 'get_treasury',
+      stack: [],
+    });
+    return result.exit_code === 0 || result.exit_code === 9;
+  } catch {
+    return false;
+  }
+}
+
+async function deployContract(secrets, code, initData, address) {
   const deployerKey = await mnemonicToPrivateKey(secrets.deployer.mnemonic.split(' '));
-  const wallet = client.open(
-    WalletContractV4.create({ workchain: 0, publicKey: deployerKey.publicKey })
-  );
+  const wallet = WalletContractV4.create({ workchain: 0, publicKey: deployerKey.publicKey });
 
-  const stateInit = beginCell()
-    .storeUint(0, 2)
-    .storeUint(0, 1)
-    .storeUint(1, 1)
-    .storeRef(code)
-    .storeRef(initData)
-    .storeUint(0, 1)
-    .endCell();
+  await sendExternalBoc(wallet, deployerKey.secretKey, [
+    internal({
+      to: address,
+      value: toNano('0.2'),
+      init: { code, data: initData },
+      bounce: false,
+    }),
+  ]);
 
-  const seqno = await wallet.getSeqno();
-  await wallet.sendTransfer({
-    secretKey: deployerKey.secretKey,
-    seqno,
-    messages: [
-      internal({
-        to: address,
-        value: toNano('0.05'),
-        init: { code, data: initData },
-        bounce: false,
-      }),
-    ],
-    sendMode: SendMode.PAY_GAS_SEPARATELY,
-  });
-
-  return { seqno };
+  return { address: wallet.address.toString({ bounceable: false, testOnly: true }) };
 }
 
-async function waitForDeploy(client, address, timeoutMs = 120000) {
+async function waitForDeploy(addressStr, timeoutMs = 180000) {
   const start = Date.now();
   while (Date.now() - start < timeoutMs) {
-    try {
-      const state = await client.getContractState(address);
-      if (state.state === 'active') return true;
-    } catch {
-      /* not deployed yet */
-    }
-    await sleep(3000);
+    if (await isContractDeployed(addressStr)) return true;
+    await sleep(5000);
   }
   return false;
 }
 
-async function sendPayment(client, secrets, contractAddr, opts) {
+async function sendPayment(secrets, contractAddr, opts) {
   const subscriberKey = await mnemonicToPrivateKey(opts.subscriberMnemonic.split(' '));
-  const wallet = client.open(
-    WalletContractV4.create({ workchain: 0, publicKey: subscriberKey.publicKey })
-  );
+  const wallet = WalletContractV4.create({ workchain: 0, publicKey: subscriberKey.publicKey });
 
   const body = buildAuthBodyForContract({
     paymentId: opts.paymentId,
@@ -267,22 +328,16 @@ async function sendPayment(client, secrets, contractAddr, opts) {
     signerSeed: secrets.signer.privateKeyHex,
   });
 
-  const seqno = await wallet.getSeqno();
-  await wallet.sendTransfer({
-    secretKey: subscriberKey.secretKey,
-    seqno,
-    messages: [
-      internal({
-        to: contractAddr,
-        value: opts.gross,
-        body,
-        bounce: true,
-      }),
-    ],
-    sendMode: SendMode.PAY_GAS_SEPARATELY,
-  });
+  await sendExternalBoc(wallet, subscriberKey.secretKey, [
+    internal({
+      to: contractAddr,
+      value: opts.gross,
+      body,
+      bounce: true,
+    }),
+  ]);
 
-  return { seqno, subscriber: wallet.address.toString({ bounceable: false, testOnly: true }) };
+  return { subscriber: wallet.address.toString({ bounceable: false, testOnly: true }) };
 }
 
 async function getRecentTxs(address, limit = 5) {
@@ -349,30 +404,35 @@ async function main() {
 
   log(`Contract address (predicted): ${contractAddr.toString({ bounceable: false, testOnly: true })}`);
 
-  const client = new TonClient({ endpoint: TESTNET_RPC });
-
-  const state = await client.getContractState(contractAddr).catch(() => null);
+  const contractStr = contractAddr.toString({ bounceable: false, testOnly: true });
   let deployTxHash = null;
 
-  if (!state || state.state !== 'active') {
+  if (!(await isContractDeployed(contractStr))) {
     log('Deploying contract...');
-    await deployContract(client, secrets, code, initData, contractAddr);
-    const deployed = await waitForDeploy(client, contractAddr);
+    await deployContract(secrets, code, initData, contractAddr);
+    const deployed = await waitForDeploy(contractStr);
     if (!deployed) throw new Error('Contract deploy timed out');
     log('Contract deployed');
   } else {
     log('Contract already active on-chain');
   }
 
-  const contractStr = contractAddr.toString({ bounceable: false, testOnly: true });
   const txs = await getRecentTxs(contractStr, 3);
   if (txs?.[0]?.transaction_id?.hash) {
     deployTxHash = txs[0].transaction_id.hash;
   }
 
-  // Generate subscriber + referrer wallets for payment test
-  const referrerMnemonic = await mnemonicNew(24);
-  const subscriberMnemonic = await mnemonicNew(24);
+  // Generate or reuse subscriber + referrer wallets for payment test
+  let referrerMnemonic;
+  let subscriberMnemonic;
+  if (secrets.testWallets?.referrer?.mnemonic && secrets.testWallets?.subscriber?.mnemonic) {
+    referrerMnemonic = secrets.testWallets.referrer.mnemonic.split(' ');
+    subscriberMnemonic = secrets.testWallets.subscriber.mnemonic.split(' ');
+    log('Reusing test wallets from secrets');
+  } else {
+    referrerMnemonic = await mnemonicNew(24);
+    subscriberMnemonic = await mnemonicNew(24);
+  }
   const referrerKey = await mnemonicToPrivateKey(referrerMnemonic);
   const subscriberKey = await mnemonicToPrivateKey(subscriberMnemonic);
   const referrerWallet = WalletContractV4.create({ workchain: 0, publicKey: referrerKey.publicKey });
@@ -388,27 +448,19 @@ async function main() {
 
   // Fund subscriber from deployer if possible
   const deployerKey = await mnemonicToPrivateKey(secrets.deployer.mnemonic.split(' '));
-  const deployerWallet = client.open(
-    WalletContractV4.create({ workchain: 0, publicKey: deployerKey.publicKey })
-  );
+  const deployerWallet = WalletContractV4.create({ workchain: 0, publicKey: deployerKey.publicKey });
 
   const subBal = await getBalanceNano(subscriberAddress);
   if (subBal < GROSS_NANOTON + 50_000_000n) {
     log('Funding subscriber wallet for payment test...');
-    const seqno = await deployerWallet.getSeqno();
-    await deployerWallet.sendTransfer({
-      secretKey: deployerKey.secretKey,
-      seqno,
-      messages: [
-        internal({
-          to: subscriberWallet.address,
-          value: toNano('0.25'),
-          bounce: false,
-        }),
-      ],
-      sendMode: SendMode.PAY_GAS_SEPARATELY,
-    });
-    await sleep(8000);
+    await sendExternalBoc(deployerWallet, deployerKey.secretKey, [
+      internal({
+        to: subscriberWallet.address,
+        value: toNano('0.25'),
+        bounce: false,
+      }),
+    ]);
+    await sleep(12000);
   }
 
   const paymentResults = [];
@@ -419,7 +471,7 @@ async function main() {
   const treasuryBefore = await getBalanceNano(treasuryAddr);
   const referrerBefore = await getBalanceNano(referrerAddress);
 
-  await sendPayment(client, secrets, contractAddr, {
+  await sendPayment(secrets, contractAddr, {
     subscriberMnemonic: subscriberMnemonic.join(' '),
     referrerAddress,
     paymentId,
@@ -458,7 +510,7 @@ async function main() {
   // Duplicate replay test
   let replayBlocked = false;
   try {
-    await sendPayment(client, secrets, contractAddr, {
+    await sendPayment(secrets, contractAddr, {
       subscriberMnemonic: subscriberMnemonic.join(' '),
       referrerAddress,
       paymentId,
@@ -477,7 +529,7 @@ async function main() {
   const wrongAmountId = paymentId + 1n;
   let wrongAmountFailed = false;
   try {
-    await sendPayment(client, secrets, contractAddr, {
+    await sendPayment(secrets, contractAddr, {
       subscriberMnemonic: subscriberMnemonic.join(' '),
       referrerAddress,
       paymentId: wrongAmountId,
