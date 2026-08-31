@@ -1,17 +1,20 @@
-import React, { useState, useEffect } from 'react'
+import React, { useState, useEffect, useCallback } from 'react'
 import { motion } from 'framer-motion'
-import { useTonConnectUI, useTonAddress, useTonWallet } from '@tonconnect/ui-react'
+import { useTonConnectUI, useTonAddress, useTonWallet, CHAIN } from '@tonconnect/ui-react'
 import { useTelegram } from '../hooks/useTelegram'
 import { GameState } from '../types/game'
-import { 
-  Wallet, 
-  Copy, 
-  Check, 
-  ExternalLink, 
-  Shield, 
-  Coins,
+import { apiService } from '../services/api'
+import { tonExplorerAddressUrl, tonExplorerTxUrl } from '../config/ton'
+import {
+  Wallet,
+  Copy,
+  Check,
+  ExternalLink,
+  Shield,
   TrendingUp,
-  AlertCircle
+  AlertCircle,
+  Loader2,
+  BadgeCheck,
 } from 'lucide-react'
 
 interface ConnectWalletScreenProps {
@@ -19,14 +22,42 @@ interface ConnectWalletScreenProps {
   onSetWalletConnection: (connected: boolean, address?: string) => void
 }
 
-const ConnectWalletScreen: React.FC<ConnectWalletScreenProps> = ({ gameState, onSetWalletConnection }) => {
+type PaymentRecord = {
+  id: string
+  status: string
+  grossAmountNanoton?: string
+  feeReserveNanoton?: string
+  netAmountNanoton?: string
+  referrerShareNanoton?: string
+  treasuryShareNanoton?: string
+  inboundTxHash?: string | null
+  referrerPayoutTxHash?: string | null
+  treasuryPayoutTxHash?: string | null
+  authorizationPayload?: Record<string, unknown>
+  economicRule?: string
+  estimatedFeesNote?: string
+  explorerUrls?: {
+    inbound?: string | null
+    referrerPayout?: string | null
+    treasuryPayout?: string | null
+  }
+}
+
+const ConnectWalletScreen: React.FC<ConnectWalletScreenProps> = ({
+  gameState,
+  onSetWalletConnection,
+}) => {
   const [tonConnectUI] = useTonConnectUI()
-  const address = useTonAddress()
+  const address = useTonAddress(true)
   const wallet = useTonWallet()
   const { hapticFeedback, showAlert, showConfirm } = useTelegram()
   const [isConnecting, setIsConnecting] = useState(false)
   const [copied, setCopied] = useState(false)
-  const [showDisconnectConfirm, setShowDisconnectConfirm] = useState(false)
+  const [walletVerified, setWalletVerified] = useState(Boolean(gameState.walletVerified))
+  const [isVerifying, setIsVerifying] = useState(false)
+  const [quote, setQuote] = useState<any>(null)
+  const [activePayment, setActivePayment] = useState<PaymentRecord | null>(null)
+  const [paymentBusy, setPaymentBusy] = useState(false)
 
   const connected = !!address && !!wallet
 
@@ -35,12 +66,30 @@ const ConnectWalletScreen: React.FC<ConnectWalletScreenProps> = ({ gameState, on
       onSetWalletConnection(true, address)
     } else {
       onSetWalletConnection(false)
+      setWalletVerified(false)
     }
   }, [connected, address, onSetWalletConnection])
+
+  useEffect(() => {
+    setWalletVerified(Boolean(gameState.walletVerified))
+  }, [gameState.walletVerified])
+
+  useEffect(() => {
+    apiService
+      .getPaymentQuote()
+      .then((res) => setQuote(res.data))
+      .catch(() => {
+        /* quote unavailable until backend TON env is configured */
+      })
+  }, [])
 
   const handleConnect = async () => {
     try {
       setIsConnecting(true)
+      tonConnectUI.setConnectRequestParameters({
+        state: 'ready',
+        value: { tonProof: '<placeholder>' },
+      })
       await tonConnectUI.connectWallet()
       hapticFeedback('light')
     } catch (error) {
@@ -48,118 +97,211 @@ const ConnectWalletScreen: React.FC<ConnectWalletScreenProps> = ({ gameState, on
       showAlert('Failed to connect wallet. Please try again.')
     } finally {
       setIsConnecting(false)
+      tonConnectUI.setConnectRequestParameters(null)
     }
   }
 
-  const handleDisconnect = async () => {
-    const confirmed = await showConfirm('Are you sure you want to disconnect your wallet?')
-    if (confirmed) {
-      try {
-        await tonConnectUI.disconnect()
-        hapticFeedback('light')
-        showAlert('Wallet disconnected successfully')
-      } catch (error) {
-        console.error('Disconnect failed:', error)
-        showAlert('Failed to disconnect wallet. Please try again.')
+  const handleVerifyWallet = useCallback(async () => {
+    if (!wallet?.account) {
+      showAlert('Connect a wallet first.')
+      return
+    }
+
+    try {
+      setIsVerifying(true)
+      const challenge = await apiService.getTonProofChallenge()
+      const nonce = challenge.data.nonce
+
+      tonConnectUI.setConnectRequestParameters({
+        state: 'ready',
+        value: { tonProof: nonce },
+      })
+
+      const reconnect = await tonConnectUI.connectWallet()
+      const tonProof = reconnect?.connectItems?.tonProof
+      if (!tonProof || tonProof.name !== 'ton_proof') {
+        throw new Error('Wallet did not return ton_proof')
       }
+      if ('error' in tonProof) {
+        throw new Error(tonProof.error.message || 'ton_proof rejected')
+      }
+
+      if (!wallet.account.publicKey) {
+        throw new Error('Wallet public key unavailable')
+      }
+
+      const result = await apiService.verifyTonProof({
+        address: wallet.account.address,
+        publicKey: wallet.account.publicKey,
+        proof: tonProof.proof as any,
+      })
+
+      setWalletVerified(true)
+      hapticFeedback('light')
+      showAlert(`Wallet verified (testnet): ${result.data.walletAddress.slice(0, 8)}…`)
+    } catch (error: any) {
+      console.error('Verify failed:', error)
+      showAlert(error?.message || 'Wallet verification failed')
+    } finally {
+      setIsVerifying(false)
+      tonConnectUI.setConnectRequestParameters(null)
+    }
+  }, [wallet, tonConnectUI, hapticFeedback, showAlert])
+
+  const handleDisconnect = async () => {
+    const confirmed = await showConfirm('Disconnect your testnet wallet?')
+    if (!confirmed) return
+    try {
+      await tonConnectUI.disconnect()
+      setWalletVerified(false)
+      setActivePayment(null)
+      hapticFeedback('light')
+    } catch {
+      showAlert('Failed to disconnect wallet.')
     }
   }
 
   const copyAddress = async () => {
-    if (address) {
-      try {
-        await navigator.clipboard.writeText(address)
-        setCopied(true)
-        hapticFeedback('light')
-        setTimeout(() => setCopied(false), 2000)
-      } catch (error) {
-        console.error('Failed to copy:', error)
-      }
+    if (!address) return
+    try {
+      await navigator.clipboard.writeText(address)
+      setCopied(true)
+      hapticFeedback('light')
+      setTimeout(() => setCopied(false), 2000)
+    } catch {
+      /* ignore */
     }
   }
 
-  const openExplorer = () => {
-    if (address) {
-      window.open(`https://tonscan.org/address/${address}`, '_blank')
+  const handleSubscribe = async () => {
+    if (!walletVerified) {
+      showAlert('Verify your wallet before subscribing.')
+      return
     }
+
+    try {
+      setPaymentBusy(true)
+      const intent = await apiService.createPaymentIntent()
+      const payment = intent.payment as PaymentRecord
+      setActivePayment(payment)
+
+      const dest =
+        (payment.authorizationPayload?.contractAddress as string) ||
+        (payment.authorizationPayload?.treasuryWallet as string)
+
+      if (!dest) {
+        throw new Error('Payment destination not configured on server')
+      }
+
+      const amount = payment.grossAmountNanoton || quote?.grossAmountNanoton
+      if (!amount) throw new Error('Missing subscription amount from server')
+
+      const tx = await tonConnectUI.sendTransaction({
+        validUntil: Math.floor(Date.now() / 1000) + 600,
+        network: CHAIN.TESTNET,
+        messages: [
+          {
+            address: dest,
+            amount,
+          },
+        ],
+      })
+
+      const inboundHash = tx.boc
+      const submit = await apiService.submitPaymentTx(payment.id, inboundHash)
+      setActivePayment(submit.payment)
+      hapticFeedback('light')
+      showAlert('Payment submitted — verifying on testnet…')
+    } catch (error: any) {
+      console.error('Subscribe failed:', error)
+      showAlert(error?.message || 'Subscription payment failed')
+    } finally {
+      setPaymentBusy(false)
+    }
+  }
+
+  const formatTon = (nanoton?: string | null) => {
+    if (!nanoton) return '—'
+    return `${(Number(nanoton) / 1e9).toFixed(4)} TON`
   }
 
   const walletFeatures = [
     {
-      title: 'Claim Points as Tokens',
-      description: 'Convert your earned points to TON Jettons',
-      icon: Coins,
-      color: 'from-yellow-500 to-orange-500'
-    },
-    {
-      title: 'Premium Upgrades',
-      description: 'Purchase upgrades using TON tokens',
+      title: 'Testnet Subscription',
+      description: 'Pay TON on testnet to activate referral revenue share (not YP)',
       icon: TrendingUp,
-      color: 'from-blue-500 to-indigo-500'
+      color: 'from-blue-500 to-indigo-500',
     },
     {
-      title: 'Secure Transactions',
-      description: 'All blockchain operations are secure and transparent',
+      title: 'Verify Wallet Ownership',
+      description: 'Cryptographic ton_proof — required before payouts',
+      icon: BadgeCheck,
+      color: 'from-purple-500 to-violet-500',
+    },
+    {
+      title: 'Secure & Non-custodial',
+      description: 'Server never holds keys; splits enforced after on-chain fees',
       icon: Shield,
-      color: 'from-green-500 to-emerald-500'
-    }
+      color: 'from-green-500 to-emerald-500',
+    },
   ]
-
-  const tonStats = {
-    network: 'Mainnet',
-    blockHeight: '12,345,678',
-    gasPrice: '0.05 TON',
-    totalSupply: '5,000,000,000 TON'
-  }
 
   return (
     <div className="min-h-screen p-4">
-      {/* Header */}
       <div className="text-center mb-6">
-        <h1 className="text-2xl font-bold text-gray-800 mb-2">Connect TON Wallet</h1>
-        <p className="text-gray-600">Connect your wallet to unlock premium features</p>
+        <h1 className="text-2xl font-bold text-gray-800 mb-2">TON Testnet Wallet</h1>
+        <p className="text-gray-600">Connect, verify, and pay testnet subscription (YORZA V2)</p>
+        <p className="text-xs text-amber-700 mt-2 bg-amber-50 inline-block px-3 py-1 rounded-full">
+          TESTNET ONLY — not real money · MAINNET NOT DEPLOYED
+        </p>
       </div>
 
-      {/* Connection Status */}
       <div className="tg-card p-6 mb-6">
         <div className="text-center">
-          <div className={`w-20 h-20 mx-auto mb-4 rounded-full flex items-center justify-center ${
-            connected ? 'bg-green-100' : 'bg-gray-100'
-          }`}>
+          <div
+            className={`w-20 h-20 mx-auto mb-4 rounded-full flex items-center justify-center ${
+              connected ? 'bg-green-100' : 'bg-gray-100'
+            }`}
+          >
             <Wallet className={`w-10 h-10 ${connected ? 'text-green-600' : 'text-gray-600'}`} />
           </div>
-          
+
           <h2 className="text-xl font-bold text-gray-800 mb-2">
             {connected ? 'Wallet Connected' : 'Wallet Not Connected'}
           </h2>
-          
-          <p className="text-gray-600 mb-4">
-            {connected 
-              ? 'Your TON wallet is connected and ready to use'
-              : 'Connect your TON wallet to access premium features'
-            }
-          </p>
 
           {!connected ? (
             <button
               onClick={handleConnect}
               disabled={isConnecting}
-              className="tg-button w-full max-w-xs disabled:opacity-50 disabled:cursor-not-allowed"
+              className="tg-button w-full max-w-xs disabled:opacity-50"
             >
-              {isConnecting ? 'Connecting...' : 'Connect TON Wallet'}
+              {isConnecting ? 'Connecting…' : 'Connect TON Wallet (Testnet)'}
             </button>
           ) : (
-            <button
-              onClick={handleDisconnect}
-              className="tg-button-secondary w-full max-w-xs"
-            >
-              Disconnect Wallet
-            </button>
+            <div className="space-y-2 max-w-xs mx-auto">
+              <button onClick={handleDisconnect} className="tg-button-secondary w-full">
+                Disconnect
+              </button>
+              {!walletVerified && (
+                <button
+                  onClick={handleVerifyWallet}
+                  disabled={isVerifying}
+                  className="tg-button w-full disabled:opacity-50"
+                >
+                  {isVerifying ? 'Verifying…' : 'Verify Wallet (ton_proof)'}
+                </button>
+              )}
+              {walletVerified && (
+                <p className="text-sm text-green-700 flex items-center justify-center gap-1">
+                  <BadgeCheck className="w-4 h-4" /> Verified testnet wallet
+                </p>
+              )}
+            </div>
           )}
         </div>
       </div>
 
-      {/* Wallet Info */}
       {connected && address && (
         <motion.div
           initial={{ opacity: 0, y: 20 }}
@@ -167,42 +309,109 @@ const ConnectWalletScreen: React.FC<ConnectWalletScreenProps> = ({ gameState, on
           className="tg-card p-4 mb-6"
         >
           <h3 className="text-lg font-semibold text-gray-800 mb-4">Wallet Information</h3>
-          
           <div className="space-y-3">
             <div className="flex items-center justify-between p-3 bg-gray-50 rounded-lg">
-              <span className="text-sm text-gray-600">Address:</span>
+              <span className="text-sm text-gray-600">Address</span>
               <div className="flex items-center space-x-2">
                 <span className="text-sm font-mono text-gray-800">
-                  {address.slice(0, 8)}...{address.slice(-8)}
+                  {address.slice(0, 8)}…{address.slice(-8)}
                 </span>
-                <button
-                  onClick={copyAddress}
-                  className="p-1 text-gray-500 hover:text-gray-700 transition-colors"
-                >
+                <button onClick={copyAddress} className="p-1 text-gray-500">
                   {copied ? <Check className="w-4 h-4" /> : <Copy className="w-4 h-4" />}
                 </button>
               </div>
             </div>
-            
             <div className="flex items-center justify-between p-3 bg-gray-50 rounded-lg">
-              <span className="text-sm text-gray-600">Network:</span>
-              <span className="text-sm font-medium text-gray-800">{tonStats.network}</span>
+              <span className="text-sm text-gray-600">Network</span>
+              <span className="text-sm font-medium text-amber-700">TON Testnet</span>
             </div>
-
             <button
-              onClick={openExplorer}
-              className="w-full p-3 bg-blue-50 text-blue-600 rounded-lg hover:bg-blue-100 transition-colors flex items-center justify-center space-x-2"
+              onClick={() => window.open(tonExplorerAddressUrl(address), '_blank')}
+              className="w-full p-3 bg-blue-50 text-blue-600 rounded-lg flex items-center justify-center space-x-2"
             >
               <ExternalLink className="w-4 h-4" />
-              <span>View on TON Explorer</span>
+              <span>View on testnet.tonscan.org</span>
             </button>
           </div>
         </motion.div>
       )}
 
-      {/* Wallet Features */}
+      {quote && (
+        <div className="tg-card p-4 mb-6">
+          <h3 className="text-lg font-semibold text-gray-800 mb-3">Testnet Subscription</h3>
+          <p className="text-xs text-gray-500 mb-3">{quote.economicRule}</p>
+          <div className="grid grid-cols-2 gap-2 text-sm mb-4">
+            <div className="p-2 bg-gray-50 rounded">
+              <div className="text-gray-500 text-xs">Gross (testnet)</div>
+              <div className="font-semibold">{quote.grossAmountTon} TON</div>
+            </div>
+            <div className="p-2 bg-gray-50 rounded">
+              <div className="text-gray-500 text-xs">Est. fees (reserve)</div>
+              <div className="font-semibold">{quote.feeReserveTon} TON</div>
+            </div>
+            <div className="p-2 bg-gray-50 rounded">
+              <div className="text-gray-500 text-xs">Est. net</div>
+              <div className="font-semibold">{quote.estimatedNetTon} TON</div>
+            </div>
+            <div className="p-2 bg-gray-50 rounded">
+              <div className="text-gray-500 text-xs">Referrer share (50% net)</div>
+              <div className="font-semibold">{formatTon(quote.estimatedReferrerShareNanoton)}</div>
+            </div>
+          </div>
+          <p className="text-xs text-gray-500 mb-3">{quote.feePolicy}</p>
+          <button
+            onClick={handleSubscribe}
+            disabled={!walletVerified || paymentBusy}
+            className="tg-button w-full disabled:opacity-50 flex items-center justify-center gap-2"
+          >
+            {paymentBusy ? (
+              <>
+                <Loader2 className="w-4 h-4 animate-spin" /> Processing…
+              </>
+            ) : (
+              'Pay Testnet Subscription'
+            )}
+          </button>
+        </div>
+      )}
+
+      {activePayment && (
+        <div className="tg-card p-4 mb-6">
+          <h3 className="text-lg font-semibold text-gray-800 mb-3">Payment Status</h3>
+          <div className="text-sm space-y-2">
+            <p>
+              Status: <span className="font-medium">{activePayment.status}</span>
+            </p>
+            <p>Gross: {formatTon(activePayment.grossAmountNanoton)}</p>
+            <p>Fee reserve: {formatTon(activePayment.feeReserveNanoton)}</p>
+            <p>Net: {formatTon(activePayment.netAmountNanoton)}</p>
+            <p>Referrer payout (50% net): {formatTon(activePayment.referrerShareNanoton)}</p>
+            <p>Treasury share: {formatTon(activePayment.treasuryShareNanoton)}</p>
+            {activePayment.status === 'PARTIALLY_SETTLED' && (
+              <p className="text-amber-700 text-xs">
+                Partially settled — not all outbound payouts confirmed on-chain yet.
+              </p>
+            )}
+            {activePayment.inboundTxHash && (
+              <button
+                className="text-blue-600 text-xs underline"
+                onClick={() =>
+                  window.open(
+                    activePayment.explorerUrls?.inbound ||
+                      tonExplorerTxUrl(activePayment.inboundTxHash!),
+                    '_blank'
+                  )
+                }
+              >
+                Inbound tx explorer
+              </button>
+            )}
+          </div>
+        </div>
+      )}
+
       <div className="tg-card p-4 mb-6">
-        <h3 className="text-lg font-semibold text-gray-800 mb-4">Premium Features</h3>
+        <h3 className="text-lg font-semibold text-gray-800 mb-4">Wallet Features</h3>
         <div className="space-y-3">
           {walletFeatures.map((feature, index) => {
             const IconComponent = feature.icon
@@ -214,69 +423,34 @@ const ConnectWalletScreen: React.FC<ConnectWalletScreenProps> = ({ gameState, on
                 transition={{ delay: index * 0.1 }}
                 className="flex items-center space-x-3 p-3 bg-gray-50 rounded-lg"
               >
-                <div className={`w-10 h-10 bg-gradient-to-r ${feature.color} rounded-full flex items-center justify-center`}>
+                <div
+                  className={`w-10 h-10 bg-gradient-to-r ${feature.color} rounded-full flex items-center justify-center`}
+                >
                   <IconComponent className="w-5 h-5 text-white" />
                 </div>
                 <div className="flex-1">
                   <h4 className="font-medium text-gray-800">{feature.title}</h4>
                   <p className="text-sm text-gray-600">{feature.description}</p>
                 </div>
-                {!connected && (
-                  <div className="text-xs text-gray-400 bg-gray-200 px-2 py-1 rounded">
-                    Locked
-                  </div>
-                )}
               </motion.div>
             )
           })}
         </div>
       </div>
 
-      {/* TON Network Stats */}
-      <div className="tg-card p-4 mb-6">
-        <h3 className="text-lg font-semibold text-gray-800 mb-4">TON Network Status</h3>
-        <div className="grid grid-cols-2 gap-3">
-          <div className="p-3 bg-gray-50 rounded-lg text-center">
-            <div className="text-lg font-bold text-blue-600">{tonStats.blockHeight}</div>
-            <div className="text-xs text-gray-500">Block Height</div>
-          </div>
-          <div className="p-3 bg-gray-50 rounded-lg text-center">
-            <div className="text-lg font-bold text-green-600">{tonStats.gasPrice}</div>
-            <div className="text-xs text-gray-500">Gas Price</div>
-          </div>
-        </div>
-      </div>
-
-      {/* Security Notice */}
       <div className="bg-blue-50 border border-blue-200 rounded-lg p-4">
         <div className="flex items-start space-x-3">
           <AlertCircle className="w-5 h-5 text-blue-600 mt-0.5 flex-shrink-0" />
           <div>
-            <h4 className="font-medium text-blue-800 mb-1">Security Notice</h4>
+            <h4 className="font-medium text-blue-800 mb-1">Testnet Security</h4>
             <p className="text-sm text-blue-700">
-              Your wallet connection is secure and encrypted. We never store your private keys or seed phrases. 
-              Always verify transaction details before confirming.
+              YP (points) stay off-chain. TON subscription payouts are testnet-only. We never store
+              your seed phrase. Amounts, splits, and destinations are chosen by the server — not the
+              client.
             </p>
           </div>
         </div>
       </div>
-
-      {/* Connection Instructions */}
-      {!connected && (
-        <motion.div
-          initial={{ opacity: 0, y: 20 }}
-          animate={{ opacity: 1, y: 0 }}
-          className="mt-6 text-center text-sm text-gray-500"
-        >
-          <p>Don't have a TON wallet?</p>
-          <button
-            onClick={() => window.open('https://ton.org/wallets', '_blank')}
-            className="text-blue-600 hover:text-blue-700 underline"
-          >
-            Get one here
-          </button>
-        </motion.div>
-      )}
     </div>
   )
 }

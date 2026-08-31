@@ -1,0 +1,150 @@
+;; YORZA ReferralPayment — testnet subscription contract (V2)
+;; Enforces: fee reserve deducted before 50/50 net split to referrer + treasury.
+;; Backend ed25519 authorization required (payment id, wallets, amounts, expiry).
+;; MAINNET NOT DEPLOYED — testnet only.
+
+#include "imports/stdlib.fc";
+
+const int op::pay_subscription = 0x591a2b3c;
+const int op::pause = 0x10;
+const int op::unpause = 0x11;
+
+const int error::unauthorized = 100;
+const int error::expired = 101;
+const int error::bad_signature = 102;
+const int error::insufficient = 103;
+const int error::replay = 104;
+const int error::paused = 105;
+
+;; storage: admin, treasury, signer_pubkey (256), paused (1 bit), processed dict
+
+global slice admin_addr;
+global slice treasury_addr;
+global int signer_pubkey;
+global int paused;
+global cell processed_dict;
+
+() load_data() impure inline {
+    slice ds = get_data().begin_parse();
+    admin_addr = ds~load_msg_addr();
+    treasury_addr = ds~load_msg_addr();
+    signer_pubkey = ds~load_uint(256);
+    paused = ds~load_uint(1);
+    processed_dict = ds~load_dict();
+}
+
+() save_data() impure inline {
+    set_data(begin_cell()
+        .store_slice(admin_addr)
+        .store_slice(treasury_addr)
+        .store_uint(signer_pubkey, 256)
+        .store_uint(paused, 1)
+        .store_dict(processed_dict)
+        .end_cell());
+}
+
+;; Authorization cell (signed off-chain by backend):
+;; payment_id:uint256 subscriber:MsgAddress referrer:MsgAddress gross:Coins fee_reserve:Coins expiry:uint64
+
+(int, slice, slice, int, int, int) parse_auth(slice s) inline {
+    return (
+        s~load_uint(256),
+        s~load_msg_addr(),
+        s~load_msg_addr(),
+        s~load_coins(),
+        s~load_coins(),
+        s~load_uint(64)
+    );
+}
+
+() recv_internal(int my_balance, int msg_value, cell in_msg_full, slice in_msg_body) impure {
+    if (in_msg_body.slice_empty?()) { return (); }
+
+    slice cs = in_msg_full.begin_parse();
+    int flags = cs~load_uint(4);
+    if (flags & 1) { return (); }
+    slice sender = cs~load_msg_addr();
+
+    load_data();
+    if (paused) { throw(error::paused); }
+
+    int op = in_msg_body~load_uint(32);
+
+    if (op == op::pause) {
+        throw_unless(error::unauthorized, equal_slices(sender, admin_addr));
+        paused = 1;
+        save_data();
+        return ();
+    }
+
+    if (op == op::unpause) {
+        throw_unless(error::unauthorized, equal_slices(sender, admin_addr));
+        paused = 0;
+        save_data();
+        return ();
+    }
+
+    throw_unless(op == op::pay_subscription, 0xffff);
+
+    slice auth_slice = in_msg_body;
+    int payment_id = auth_slice~load_uint(256);
+    slice subscriber = auth_slice~load_msg_addr();
+    slice referrer = auth_slice~load_msg_addr();
+    int gross = auth_slice~load_coins();
+    int fee_reserve = auth_slice~load_coins();
+    int expiry = auth_slice~load_uint(64);
+    slice signature = auth_slice~load_bits(512);
+
+    throw_unless(error::expired, expiry > now());
+    throw_if(error::replay, processed_dict.int_dict_get?(256, payment_id));
+    throw_unless(error::insufficient, msg_value >= gross);
+
+    ;; Signature over inner authorization (without op + signature)
+    slice auth_no_sig = in_msg_body;
+    auth_no_sig~load_uint(32 + 256 + 267 + 267 + 124 + 124 + 64);
+    throw_unless(error::bad_signature, check_signature(slice_hash(auth_no_sig), signature, signer_pubkey));
+
+    throw_unless(error::unauthorized, equal_slices(sender, subscriber));
+
+    int net = gross - fee_reserve;
+    throw_if(error::insufficient, net <= 0);
+
+    int ref_share = net / 2;
+    int tre_share = net - ref_share;
+
+    var msg_ref = begin_cell()
+        .store_uint(0x18, 6)
+        .store_slice(referrer)
+        .store_coins(ref_share)
+        .store_uint(0, 1 + 4 + 4 + 64 + 32 + 1 + 1)
+        .end_cell();
+
+    var msg_tre = begin_cell()
+        .store_uint(0x18, 6)
+        .store_slice(treasury_addr)
+        .store_coins(tre_share)
+        .store_uint(0, 1 + 4 + 4 + 64 + 32 + 1 + 1)
+        .end_cell();
+
+    send_raw_message(msg_ref, 1);
+    send_raw_message(msg_tre, 1);
+
+    processed_dict~set(256, payment_id, begin_cell().store_uint(1, 1).end_cell());
+    save_data();
+}
+
+int get_payment_processed(int payment_id) method_id {
+    load_data();
+    (int found, slice _) = processed_dict.int_dict_get?(256, payment_id);
+    return found;
+}
+
+slice get_treasury() method_id {
+    load_data();
+    return treasury_addr;
+}
+
+int is_paused() method_id {
+    load_data();
+    return paused;
+}

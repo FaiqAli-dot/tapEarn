@@ -88,6 +88,9 @@ const userSchema = new mongoose.Schema({
   // Wallet integration
   walletAddress: String,
   walletConnected: { type: Boolean, default: false },
+  walletVerified: { type: Boolean, default: false },
+  walletVerifiedAt: { type: Date, default: null },
+  tonSubscriptionReferralEarningsNanoton: { type: String, default: '0' },
   
   // Timestamps
   lastDailyReward: Date,

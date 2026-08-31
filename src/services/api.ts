@@ -335,6 +335,54 @@ class ApiService {
     const result = await this.request(`/video-codes/${taskId}`, { method: 'DELETE' });
     return result.data;
   }
+
+  async getTonProofChallenge() {
+    return this.request('/ton-proof/challenge', { method: 'POST' });
+  }
+
+  async verifyTonProof(payload: {
+    address: string
+    publicKey: string
+    proof: {
+      timestamp: number
+      domain: { lengthBytes: number; value: string }
+      payload: string
+      signature: string
+      state_init: string
+    }
+  }) {
+    return this.request('/ton-proof/verify', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    });
+  }
+
+  async getPaymentQuote() {
+    return this.request('/payments/quote');
+  }
+
+  async createPaymentIntent() {
+    return this.request('/payments/intent', { method: 'POST' });
+  }
+
+  async getPayment(paymentId: string) {
+    return this.request(`/payments/${paymentId}`);
+  }
+
+  async submitPaymentTx(paymentId: string, inboundTxHash: string) {
+    return this.request(`/payments/${paymentId}/submit`, {
+      method: 'POST',
+      body: JSON.stringify({ inboundTxHash }),
+    });
+  }
+
+  async confirmPayment(paymentId: string) {
+    return this.request(`/payments/${paymentId}/confirm`, { method: 'POST' });
+  }
+
+  async getPaymentHistory() {
+    return this.request('/payments/history');
+  }
 }
 
 export const apiService = new ApiService();

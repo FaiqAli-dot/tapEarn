@@ -6,6 +6,7 @@ import authRoutes from './routes/authRoutes.js';
 import campaignRoutes from './routes/campaignRoutes.js';
 import adminCampaignRoutes from './routes/adminCampaignRoutes.js';
 import paymentRoutes from './routes/paymentRoutes.js';
+import tonProofRoutes from './routes/tonProofRoutes.js';
 import { requireAuth } from './middleware/auth.js';
 import { requireAdmin } from './middleware/adminAuth.js';
 import { generalRateLimiter } from './middleware/rateLimiter.js';
@@ -62,6 +63,7 @@ export function createApp() {
   app.use('/api/campaigns', campaignRoutes);
   app.use('/api/admin/campaigns', adminCampaignRoutes);
   app.use('/api/payments', paymentRoutes);
+  app.use('/api/ton-proof', tonProofRoutes);
 
   app.get('/health', (req, res) => {
     res.status(200).json({

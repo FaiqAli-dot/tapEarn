@@ -159,6 +159,8 @@ const getUserGameState = async (telegramId) => {
     referralCount: user.referrals.length,
     walletConnected: user.walletConnected,
     walletAddress: user.walletAddress,
+    walletVerified: user.walletVerified,
+    walletVerifiedAt: user.walletVerifiedAt,
     engagement: {
       quests: questStatus,
       xp,
@@ -189,6 +191,10 @@ const updateUserGameState = async (telegramId, gameState) => {
 
   for (const key of ALLOWED_GAME_STATE_FIELDS) {
     if (gameState[key] !== undefined) {
+      if (key === 'walletAddress' && gameState.walletAddress !== user.walletAddress) {
+        user.walletVerified = false;
+        user.walletVerifiedAt = null;
+      }
       user[key] = gameState[key];
     }
   }
