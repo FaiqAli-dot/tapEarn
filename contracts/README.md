@@ -1,85 +1,75 @@
-# YORZA ReferralPayment Contract (Testnet)
+# YORZA V2 — Non-Custodial TON Referral & Subscription Router (Testnet)
 
 **MAINNET NOT DEPLOYED** — testnet-only deployment.
 
-## Economic rule
+## Router design
 
-After applicable TON transaction and payout fees are deducted, the remaining net subscription amount is split 50/50 between the verified referrer and YORZA.
+- Single `subscribe` op (`0x591a2b3c`)
+- Backend ed25519 authorization: `payment_id`, `subscriber`, `referrer`, `amount`, `expiry`, `nonce`
+- On-chain: `RAWRESERVE` execution gas + `GETFORWARDFEE` ×2, then 50/50 split of distributable amount
+- Odd nanotons → treasury
+- Replay protection via processed `payment_id` dict
+- **No** admin, pause, withdraw, treasury change, or user state on-chain
 
-## Fee policy (v1)
+## Fee policy (v2-router)
 
-| Field | Value |
+| Step | On-chain |
 | --- | --- |
-| `FEE_RESERVE_NANOTON` | 50_000_000 (0.05 TON estimate) |
-| Deduction | Subtracted from **gross** before split |
-| Split | `referrer = net / 2`, `treasury = net - referrer` (odd nanotons → treasury) |
-| Default gross | `TON_SUBSCRIPTION_AMOUNT=0.1` (100_000_000 nanoton) |
+| Incoming | `msg_value` must equal signed `amount` |
+| Execution reserve | `RAWRESERVE(EXEC_BASE + EXEC_DICT_OP)` |
+| Outgoing fees | `2 × GETFORWARDFEE` for bounceable internal transfers |
+| Distributable | `amount - execution_reserve - outgoing_fees` |
+| Split | `referrer = distributable / 2`, `treasury = distributable - referrer` |
 
-## Testnet deploy (2026-08-31)
+Backend quotes mirror this with configurable `TON_TESTNET_FWD_FEE_NANOTON` estimate; on-chain config is authoritative.
+
+## Testnet deploy (V2 router — 2026-09-01)
 
 | Item | Value |
 | --- | --- |
 | Network | `testnet` |
-| Status | **DEPLOYED** |
-| Contract | `0QCxSMBZy7Z9PkkrmIE-2H-tz4H6BsVGxXeue9pbI_uu6Xf2` |
-| Deploy tx | `Lglz8FL9LWLyRif/9RuD5xm0md2q24fBqMLYzWE8BF4=` |
+| Status | **DEPLOYED** (live 0.1 TON payment **BLOCKED** — underfunded deployer) |
+| Contract | `0QDb2mg_3L8FMmA-wiX5c8Eec9PDz8OZVufWZMmdI7xUgJ3w` |
+| Deploy tx | `7/jllwi5QLFDH52nC6Mp1SMrrbwfxSisRmZ4UKddoYU=` |
 | Treasury | `0QBVP_9rEHfTB8iextldwtqq0ugRUtaccJioD8Z_gWSprS1T` |
-| Signer pubkey (ed25519) | `b2fef7892defd10b586ebdb66da83c94e7a6faffbf23681d712193cd51494736` |
-| Deployer | `0QDDV5J02yNB8mEU8GfXqa9fqz0X6nCP8KwgketmbIFRgIJU` |
+| Signer pubkey | `b2fef7892defd10b586ebdb66da83c94e7a6faffbf23681d712193cd51494736` |
+| Deployer | `0QDDV5J02yNB8mEU8GfXqa9fqz0X6nCP8KwgketmbIFRgIJU` (~0.09 TON remaining) |
 
-### Explorers
+### V1 contract (superseded — do not use for new payments)
 
-- Contract: https://testnet.tonscan.org/address/0QCxSMBZy7Z9PkkrmIE-2H-tz4H6BsVGxXeue9pbI_uu6Xf2
-- Deploy tx: https://testnet.tonscan.org/tx/Lglz8FL9LWLyRif/9RuD5xm0md2q24fBqMLYzWE8BF4=
-- Treasury: https://testnet.tonscan.org/address/0QBVP_9rEHfTB8iextldwtqq0ugRUtaccJioD8Z_gWSprS1T
-- Deployer: https://testnet.tonscan.org/address/0QDDV5J02yNB8mEU8GfXqa9fqz0X6nCP8KwgketmbIFRgIJU
+`0QCxSMBZy7Z9PkkrmIE-2H-tz4H6BsVGxXeue9pbI_uu6Xf2` — had admin/pause and hardcoded fee_reserve; replaced by V2 router.
 
-### Live payment test (0.1 TON)
+### Explorers (V2)
 
-| Check | Result |
-| --- | --- |
-| 0.1 TON gross on testnet | **BLOCKED** — deployer balance depleted (~0.09 TON remaining; need ≥0.1 TON + gas for subscriber payment) |
-| Sandbox 0.1 TON split | **PASS** — 25_000_000 / 25_000_000 nanoton nominal; ~24_876_400 received each after outbound forward fees |
-| Replay / duplicate | **PASS** in sandbox (second identical `payment_id` does not pay again) |
-| Wrong amount | **PASS** in sandbox (underpay rejected; no extra payout) |
-
-Re-run live payment after topping up deployer or funded subscriber wallet:
+- Contract: https://testnet.tonscan.org/address/0QDb2mg_3L8FMmA-wiX5c8Eec9PDz8OZVufWZMmdI7xUgJ3w
+- Deploy tx: https://testnet.tonscan.org/tx/7/jllwi5QLFDH52nC6Mp1SMrrbwfxSisRmZ4UKddoYU=
 
 ```bash
 cd contracts
 npm install
 npm run build
-node scripts/pay-testnet.js   # single 0.1 TON payment against deployed contract
-```
-
-## Tooling
-
-```bash
-cd contracts
-npm install
-npm run build          # compile ReferralPayment.fc
-npm run deploy         # deploy + integration tests (secrets in .deploy-secrets.json, gitignored)
-npm test               # split math tests
-```
-
-## Required env vars (Render / backend)
-
-```
-TON_NETWORK=testnet
-TON_TESTNET_REFERRAL_CONTRACT_ADDRESS=0QCxSMBZy7Z9PkkrmIE-2H-tz4H6BsVGxXeue9pbI_uu6Xf2
-TON_TESTNET_TREASURY_ADDRESS=0QBVP_9rEHfTB8iextldwtqq0ugRUtaccJioD8Z_gWSprS1T
-TON_PAYMENT_SIGNER_PUBLIC_KEY=b2fef7892defd10b586ebdb66da83c94e7a6faffbf23681d712193cd51494736
-TON_PAYMENT_SIGNER_PRIVATE_KEY=            # from deploy secrets — NEVER commit
-TON_SUBSCRIPTION_AMOUNT=0.1
+export TON_DEPLOYER_MNEMONIC="..."
+export TON_TESTNET_TREASURY_ADDRESS="..."
+export TON_PAYMENT_SIGNER_PRIVATE_KEY="..."
+export TON_PAYMENT_SIGNER_PUBLIC_KEY="..."
+npm run deploy
 ```
 
 ## Tests (local)
 
-| Suite | Result |
+| Suite | Command |
 | --- | --- |
-| `contracts/tests/split.test.js` | 4/4 pass |
-| `backend/tests/*.test.js` | 41/41 pass |
+| Split math | `npm run test:split` |
+| Sandbox router | `npm test` |
+| Backend | `cd ../backend && npm test` |
 
-## Partial settlement
+## Required backend env
 
-If inbound tx confirms but one outbound payout bounces, backend marks `PARTIALLY_SETTLED`. Contract sends both outbound messages atomically in one `recv_internal`; bounce simulation is not available in the deploy script.
+```
+TON_NETWORK=testnet
+TON_TESTNET_REFERRAL_CONTRACT_ADDRESS=<from deploy-report.json>
+TON_TESTNET_TREASURY_ADDRESS=...
+TON_PAYMENT_SIGNER_PUBLIC_KEY=...
+TON_PAYMENT_SIGNER_PRIVATE_KEY=...   # NEVER commit
+TON_SUBSCRIPTION_AMOUNT=0.1
+```
