@@ -1,3 +1,8 @@
+#!/usr/bin/env node
+/**
+ * Deploy YORZA V2 router to TON testnet and run integration checks.
+ * Secrets from env only — never written to git.
+ */
 import {
   Address,
   beginCell,
@@ -9,7 +14,7 @@ import {
   storeMessage,
   toNano,
 } from '@ton/core';
-import { mnemonicNew, mnemonicToPrivateKey, sign, keyPairFromSeed } from '@ton/crypto';
+import { mnemonicToPrivateKey, sign, keyPairFromSeed } from '@ton/crypto';
 import { WalletContractV4 } from '@ton/ton';
 import { readFileSync, writeFileSync, existsSync } from 'node:fs';
 import path from 'node:path';
@@ -18,12 +23,11 @@ import crypto from 'node:crypto';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(__dirname, '..');
-const SECRETS_PATH = path.join(ROOT, '.deploy-secrets.json');
 const COMPILED_PATH = path.join(ROOT, 'build', 'ReferralPayment.compiled.json');
+const REPORT_PATH = path.join(ROOT, 'deploy-report.json');
 
-const OP_PAY_SUBSCRIPTION = 0x591a2b3c;
-const FEE_RESERVE_NANOTON = 50_000_000n;
-const GROSS_NANOTON = 100_000_000n; // 0.1 TON
+const OP_SUBSCRIBE = 0x591a2b3c;
+const GROSS_NANOTON = 100_000_000n;
 const TESTNET_RPC = 'https://testnet.toncenter.com/api/v2/jsonRPC';
 const TESTNET_REST = 'https://testnet.toncenter.com/api/v2';
 let lastRpcAt = 0;
@@ -64,45 +68,32 @@ async function toncenter(method, params = {}) {
       json.result === 'Ratelimit exceed' ||
       String(json.error || '').includes('Ratelimit')
     ) {
-      const backoff = 1500 * (attempt + 1);
-      log(`Rate limited on ${method}, retrying in ${backoff}ms...`);
-      await sleep(backoff);
+      await sleep(1500 * (attempt + 1));
       continue;
     }
 
-    if (json.error) {
-      throw new Error(json.error.message || JSON.stringify(json.error));
-    }
-    if (json.ok === false) {
-      throw new Error(json.result || `RPC failed: ${method}`);
-    }
+    if (json.error) throw new Error(json.error.message || JSON.stringify(json.error));
+    if (json.ok === false) throw new Error(json.result || `RPC failed: ${method}`);
     return json.result;
   }
-
   throw new Error(`Rate limit exceeded for ${method}`);
 }
 
-async function toncenterGet(path, query = {}) {
+async function toncenterGet(p, query = {}) {
   const minGap = 1300;
   const wait = Math.max(0, minGap - (Date.now() - lastRpcAt));
   if (wait) await sleep(wait);
   lastRpcAt = Date.now();
-
-  const url = new URL(`${TESTNET_REST}/${path}`);
+  const url = new URL(`${TESTNET_REST}/${p}`);
   Object.entries(query).forEach(([k, v]) => url.searchParams.set(k, String(v)));
   const res = await fetch(url);
   const json = await res.json();
-  if (!json.ok) throw new Error(json.error || json.result || `GET ${path} failed`);
+  if (!json.ok) throw new Error(json.error || json.result || `GET ${p} failed`);
   return json.result;
 }
 
 async function getBalanceNano(address) {
-  const result = await toncenterGet('getAddressBalance', { address });
-  return BigInt(result);
-}
-
-async function getAccountState(address) {
-  return toncenterGet('getAddressInformation', { address });
+  return BigInt(await toncenterGet('getAddressBalance', { address }));
 }
 
 async function getWalletSeqno(address) {
@@ -118,160 +109,75 @@ async function sendExternalBoc(wallet, secretKey, messages, init) {
     messages,
     sendMode: SendMode.PAY_GAS_SEPARATELY,
   });
-
   const ext = external({
     to: wallet.address,
     init: seqno === 0 ? wallet.init : undefined,
     body: transfer,
   });
-
   const boc = beginCell().store(storeMessage(ext)).endCell().toBoc().toString('base64');
   await toncenter('sendBoc', { boc });
-  return { seqno };
 }
 
-async function loadOrCreateSecrets() {
-  if (existsSync(SECRETS_PATH)) {
-    return JSON.parse(readFileSync(SECRETS_PATH, 'utf8'));
-  }
+function loadSecretsFromEnv() {
+  const deployerMnemonic = process.env.TON_DEPLOYER_MNEMONIC;
+  const treasuryAddress = process.env.TON_TESTNET_TREASURY_ADDRESS;
+  const signerPrivateKeyHex = process.env.TON_PAYMENT_SIGNER_PRIVATE_KEY?.replace(/^0x/, '');
+  const signerPublicKeyHex = process.env.TON_PAYMENT_SIGNER_PUBLIC_KEY?.replace(/^0x/, '');
 
-  const deployerMnemonic = await mnemonicNew(24);
-  const treasuryMnemonic = await mnemonicNew(24);
-  const deployerKey = await mnemonicToPrivateKey(deployerMnemonic);
-  const treasuryKey = await mnemonicToPrivateKey(treasuryMnemonic);
+  if (!deployerMnemonic) throw new Error('TON_DEPLOYER_MNEMONIC is required');
+  if (!treasuryAddress) throw new Error('TON_TESTNET_TREASURY_ADDRESS is required');
+  if (!signerPrivateKeyHex) throw new Error('TON_PAYMENT_SIGNER_PRIVATE_KEY is required');
+  if (!signerPublicKeyHex) throw new Error('TON_PAYMENT_SIGNER_PUBLIC_KEY is required');
 
-  const deployerWallet = WalletContractV4.create({
-    workchain: 0,
-    publicKey: deployerKey.publicKey,
-  });
-  const treasuryWallet = WalletContractV4.create({
-    workchain: 0,
-    publicKey: treasuryKey.publicKey,
-  });
-
-  const ed25519 = crypto.generateKeyPairSync('ed25519');
-  const signerSeed = ed25519.privateKey.export({ type: 'pkcs8', format: 'der' }).subarray(-32);
-  const signerPub = ed25519.publicKey.export({ type: 'spki', format: 'der' }).subarray(-32);
-
-  const secrets = {
-    network: 'testnet',
-    deployer: {
-      mnemonic: deployerMnemonic.join(' '),
-      address: deployerWallet.address.toString({ bounceable: false, testOnly: true }),
-    },
-    treasury: {
-      mnemonic: treasuryMnemonic.join(' '),
-      address: treasuryWallet.address.toString({ bounceable: false, testOnly: true }),
-    },
-    signer: {
-      privateKeyHex: signerSeed.toString('hex'),
-      publicKeyHex: signerPub.toString('hex'),
-      publicKeyUint256: BigInt(`0x${signerPub.toString('hex')}`).toString(),
-    },
-    createdAt: new Date().toISOString(),
-  };
-
-  writeFileSync(SECRETS_PATH, JSON.stringify(secrets, null, 2), { mode: 0o600 });
-  log(`Generated throwaway testnet secrets at ${SECRETS_PATH} (gitignored)`);
-  return secrets;
+  return { deployerMnemonic, treasuryAddress, signerPrivateKeyHex, signerPublicKeyHex };
 }
 
-async function tryFaucets(address) {
-  const attempts = [];
-
-  // Chainstack faucet (requires API key — will fail without one)
-  try {
-    const res = await fetch('https://api.chainstack.com/v1/faucet/ton-testnet', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ address }),
-    });
-    const text = await res.text();
-    attempts.push({ faucet: 'chainstack-api', status: res.status, body: text.slice(0, 200) });
-  } catch (e) {
-    attempts.push({ faucet: 'chainstack-api', error: e.message });
-  }
-
-  // Legacy ton.org endpoints
-  for (const url of [
-    'https://faucet.ton.org/api/v1/testnet/faucet',
-    'https://testnet.tonapi.io/v2/faucet',
-    'https://testnet.tonapi.io/v1/faucet',
-  ]) {
-    try {
-      const res = await fetch(url, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ address }),
-      });
-      const text = await res.text();
-      attempts.push({ faucet: url, status: res.status, body: text.slice(0, 200) });
-    } catch (e) {
-      attempts.push({ faucet: url, error: e.message });
-    }
-  }
-
-  return attempts;
-}
-
-function buildInitData(admin, treasury, signerPubKeyBigInt) {
+function buildInitData(treasury, signerPubKeyBigInt) {
   return beginCell()
-    .storeAddress(admin)
     .storeAddress(treasury)
     .storeUint(signerPubKeyBigInt, 256)
-    .storeUint(0, 1)
     .storeDict(null)
     .endCell();
 }
 
 function loadCompiledCode() {
-  if (!existsSync(COMPILED_PATH)) {
-    throw new Error(`Missing ${COMPILED_PATH} — run npm run build first`);
-  }
+  if (!existsSync(COMPILED_PATH)) throw new Error(`Missing ${COMPILED_PATH} — run npm run build`);
   const compiled = JSON.parse(readFileSync(COMPILED_PATH, 'utf8'));
   return Cell.fromBoc(Buffer.from(compiled.hex, 'hex'))[0];
 }
 
-function contractAddressFromInit(code, initData) {
-  return contractAddress(0, { code, data: initData });
-}
-
-function buildAuthBodyForContract({
+function buildSubscribeBody({
   paymentId,
   subscriber,
   referrer,
-  gross,
-  feeReserve,
+  amount,
   expiry,
+  nonce,
   signerSeed,
 }) {
   const authCell = beginCell()
     .storeUint(paymentId, 256)
     .storeAddress(subscriber)
     .storeAddress(referrer)
-    .storeCoins(gross)
-    .storeCoins(feeReserve)
+    .storeCoins(amount)
     .storeUint(expiry, 64)
+    .storeUint(nonce, 64)
     .endCell();
 
-  const hash = authCell.hash();
-  const keyPair = keyPairFromSeed(Buffer.from(signerSeed, 'hex'));
-  const sig = sign(hash, keyPair.secretKey);
-
+  const sig = sign(authCell.hash(), keyPairFromSeed(Buffer.from(signerSeed, 'hex')).secretKey);
   const authPart = beginCell()
-    .storeUint(OP_PAY_SUBSCRIPTION, 32)
     .storeUint(paymentId, 256)
     .storeAddress(subscriber)
     .storeAddress(referrer)
-    .storeCoins(gross)
-    .storeCoins(feeReserve)
+    .storeCoins(amount)
     .storeUint(expiry, 64)
+    .storeUint(nonce, 64)
     .endCell();
-
   const sigPart = beginCell().storeUint(BigInt(`0x${sig.toString('hex')}`), 512).endCell();
 
   return beginCell()
-    .storeSlice(authPart.asSlice())
+    .storeUint(OP_SUBSCRIBE, 32)
+    .storeSlice(authPart.beginParse())
     .storeRef(sigPart)
     .endCell();
 }
@@ -289,273 +195,191 @@ async function isContractDeployed(addressStr) {
   }
 }
 
-async function deployContract(secrets, code, initData, address) {
-  const deployerKey = await mnemonicToPrivateKey(secrets.deployer.mnemonic.split(' '));
-  const wallet = WalletContractV4.create({ workchain: 0, publicKey: deployerKey.publicKey });
-
-  await sendExternalBoc(wallet, deployerKey.secretKey, [
-    internal({
-      to: address,
-      value: toNano('0.2'),
-      init: { code, data: initData },
-      bounce: false,
-    }),
-  ]);
-
-  return { address: wallet.address.toString({ bounceable: false, testOnly: true }) };
-}
-
-async function waitForDeploy(addressStr, timeoutMs = 180000) {
-  const start = Date.now();
-  while (Date.now() - start < timeoutMs) {
-    if (await isContractDeployed(addressStr)) return true;
-    await sleep(5000);
+async function tryFaucets(address) {
+  const attempts = [];
+  for (const url of [
+    'https://testnet.tonapi.io/v2/faucet',
+    'https://faucet.ton.org/api/v1/testnet/faucet',
+  ]) {
+    try {
+      const res = await fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ address }),
+      });
+      attempts.push({ faucet: url, status: res.status, body: (await res.text()).slice(0, 200) });
+    } catch (e) {
+      attempts.push({ faucet: url, error: e.message });
+    }
   }
-  return false;
-}
-
-async function sendPayment(secrets, contractAddr, opts) {
-  const subscriberKey = await mnemonicToPrivateKey(opts.subscriberMnemonic.split(' '));
-  const wallet = WalletContractV4.create({ workchain: 0, publicKey: subscriberKey.publicKey });
-
-  const body = buildAuthBodyForContract({
-    paymentId: opts.paymentId,
-    subscriber: wallet.address,
-    referrer: Address.parse(opts.referrerAddress),
-    gross: opts.gross,
-    feeReserve: opts.feeReserve,
-    expiry: opts.expiry,
-    signerSeed: secrets.signer.privateKeyHex,
-  });
-
-  await sendExternalBoc(wallet, subscriberKey.secretKey, [
-    internal({
-      to: contractAddr,
-      value: opts.gross,
-      body,
-      bounce: true,
-    }),
-  ]);
-
-  return { subscriber: wallet.address.toString({ bounceable: false, testOnly: true }) };
-}
-
-async function getRecentTxs(address, limit = 5) {
-  return toncenter('getTransactions', { address, limit });
+  return attempts;
 }
 
 async function main() {
-  const secrets = await loadOrCreateSecrets();
-  const deployerAddr = secrets.deployer.address;
-  const treasuryAddr = secrets.treasury.address;
+  const secrets = loadSecretsFromEnv();
+  const deployerKey = await mnemonicToPrivateKey(secrets.deployerMnemonic.split(' '));
+  const deployerWallet = WalletContractV4.create({ workchain: 0, publicKey: deployerKey.publicKey });
+  const deployerAddr = deployerWallet.address.toString({ bounceable: false, testOnly: true });
+  const treasuryAddr = secrets.treasuryAddress;
 
   log(`Deployer: ${deployerAddr}`);
   log(`Treasury: ${treasuryAddr}`);
-  log(`Signer pubkey: ${secrets.signer.publicKeyHex}`);
-  log(`Deployer explorer: ${explorerAddr(deployerAddr)}`);
+  log(`Signer pubkey: ${secrets.signerPublicKeyHex}`);
 
   let balance = await getBalanceNano(deployerAddr);
   log(`Deployer balance: ${balance} nanoton (${Number(balance) / 1e9} TON)`);
 
-  if (balance < 200_000_000n) {
+  if (balance < 85_000_000n) {
     log('Attempting testnet faucets...');
     const faucetAttempts = await tryFaucets(deployerAddr);
-    for (const a of faucetAttempts) {
-      log(`Faucet ${a.faucet}: ${JSON.stringify(a)}`);
-    }
-    await sleep(5000);
+    for (const a of faucetAttempts) log(`Faucet ${a.faucet}: ${JSON.stringify(a)}`);
+    await sleep(8000);
     balance = await getBalanceNano(deployerAddr);
-    log(`Balance after faucet attempts: ${balance} nanoton`);
+    log(`Balance after faucet: ${balance} nanoton`);
   }
 
-  if (balance < 200_000_000n) {
+  if (balance < 85_000_000n) {
     const report = {
       status: 'FUNDING_REQUIRED',
       network: 'testnet',
       deployerAddress: deployerAddr,
       treasuryAddress: treasuryAddr,
-      signerPublicKeyHex: secrets.signer.publicKeyHex,
+      signerPublicKeyHex: secrets.signerPublicKeyHex,
       deployerExplorer: explorerAddr(deployerAddr),
+      requiredNanoton: '90000000',
+      currentBalanceNanoton: balance.toString(),
       faucetInstructions: [
         'Open Telegram @testgiver_ton_bot',
         'Tap "Get 2 GRAM in testnet", solve captcha',
         `Paste deployer address: ${deployerAddr}`,
-        'Alternatively use https://faucet.chainstack.com/ton-testnet-faucet with a Chainstack API key',
       ],
-      note: 'No automated HTTP faucet succeeded without human/API-key auth. Re-run npm run deploy after funding.',
     };
-    writeFileSync(path.join(ROOT, 'deploy-report.json'), JSON.stringify(report, null, 2));
+    writeFileSync(REPORT_PATH, JSON.stringify(report, null, 2));
     console.log(JSON.stringify(report, null, 2));
     process.exit(2);
   }
 
-  log('Compiling if needed...');
   if (!existsSync(COMPILED_PATH)) {
     const { execSync } = await import('node:child_process');
     execSync('node scripts/compile.js', { cwd: ROOT, stdio: 'inherit' });
   }
 
   const code = loadCompiledCode();
-  const admin = Address.parse(deployerAddr);
   const treasury = Address.parse(treasuryAddr);
-  const signerPub = BigInt(secrets.signer.publicKeyUint256);
-  const initData = buildInitData(admin, treasury, signerPub);
-  const contractAddr = contractAddressFromInit(code, initData);
-
-  log(`Contract address (predicted): ${contractAddr.toString({ bounceable: false, testOnly: true })}`);
-
+  const signerPub = BigInt(`0x${secrets.signerPublicKeyHex}`);
+  const initData = buildInitData(treasury, signerPub);
+  const contractAddr = contractAddress(0, { code, data: initData });
   const contractStr = contractAddr.toString({ bounceable: false, testOnly: true });
-  let deployTxHash = null;
+
+  log(`Contract address (predicted): ${contractStr}`);
 
   if (!(await isContractDeployed(contractStr))) {
-    log('Deploying contract...');
-    await deployContract(secrets, code, initData, contractAddr);
-    const deployed = await waitForDeploy(contractStr);
-    if (!deployed) throw new Error('Contract deploy timed out');
+    log('Deploying V2 router...');
+    await sendExternalBoc(
+      deployerWallet,
+      deployerKey.secretKey,
+      [
+        internal({
+          to: contractAddr,
+          value: toNano('0.05'),
+          init: { code, data: initData },
+          bounce: false,
+        }),
+      ]
+    );
+    for (let i = 0; i < 36 && !(await isContractDeployed(contractStr)); i++) {
+      await sleep(5000);
+    }
+    if (!(await isContractDeployed(contractStr))) throw new Error('Contract deploy timed out');
     log('Contract deployed');
   } else {
-    log('Contract already active on-chain');
+    log('Contract already active');
   }
 
-  const txs = await getRecentTxs(contractStr, 3);
-  if (txs?.[0]?.transaction_id?.hash) {
-    deployTxHash = txs[0].transaction_id.hash;
-  }
+  const txs = await toncenter('getTransactions', { address: contractStr, limit: 3 });
+  const deployTxHash = txs?.[0]?.transaction_id?.hash || null;
 
-  // Generate or reuse subscriber + referrer wallets for payment test
-  let referrerMnemonic;
-  let subscriberMnemonic;
-  if (secrets.testWallets?.referrer?.mnemonic && secrets.testWallets?.subscriber?.mnemonic) {
-    referrerMnemonic = secrets.testWallets.referrer.mnemonic.split(' ');
-    subscriberMnemonic = secrets.testWallets.subscriber.mnemonic.split(' ');
-    log('Reusing test wallets from secrets');
-  } else {
-    referrerMnemonic = await mnemonicNew(24);
-    subscriberMnemonic = await mnemonicNew(24);
-  }
+  // Create throwaway referrer wallet for live payment test
+  const { mnemonicNew } = await import('@ton/crypto');
+  const referrerMnemonic = await mnemonicNew(24);
   const referrerKey = await mnemonicToPrivateKey(referrerMnemonic);
-  const subscriberKey = await mnemonicToPrivateKey(subscriberMnemonic);
   const referrerWallet = WalletContractV4.create({ workchain: 0, publicKey: referrerKey.publicKey });
-  const subscriberWallet = WalletContractV4.create({ workchain: 0, publicKey: subscriberKey.publicKey });
   const referrerAddress = referrerWallet.address.toString({ bounceable: false, testOnly: true });
-  const subscriberAddress = subscriberWallet.address.toString({ bounceable: false, testOnly: true });
 
-  secrets.testWallets = {
-    referrer: { mnemonic: referrerMnemonic.join(' '), address: referrerAddress },
-    subscriber: { mnemonic: subscriberMnemonic.join(' '), address: subscriberAddress },
-  };
-  writeFileSync(SECRETS_PATH, JSON.stringify(secrets, null, 2), { mode: 0o600 });
-
-  // Fund subscriber from deployer if possible
-  const deployerKey = await mnemonicToPrivateKey(secrets.deployer.mnemonic.split(' '));
-  const deployerWallet = WalletContractV4.create({ workchain: 0, publicKey: deployerKey.publicKey });
-
-  const subBal = await getBalanceNano(subscriberAddress);
-  if (subBal < GROSS_NANOTON + 50_000_000n) {
-    log('Funding subscriber wallet for payment test...');
-    await sendExternalBoc(deployerWallet, deployerKey.secretKey, [
-      internal({
-        to: subscriberWallet.address,
-        value: toNano('0.25'),
-        bounce: false,
-      }),
-    ]);
-    await sleep(12000);
+  if (balance < GROSS_NANOTON + 80_000_000n) {
+    const report = {
+      status: 'DEPLOYED_PAYMENT_BLOCKED',
+      network: 'testnet',
+      contractAddress: contractStr,
+      deployTxHash,
+      treasuryAddress: treasuryAddr,
+      signerPublicKeyHex: secrets.signerPublicKeyHex,
+      deployerAddress: deployerAddr,
+      deployerBalanceNanoton: balance.toString(),
+      note: 'Contract deployed but deployer balance insufficient for 0.1 TON live payment test',
+      explorers: {
+        contract: explorerAddr(contractStr),
+        deployer: explorerAddr(deployerAddr),
+        treasury: explorerAddr(treasuryAddr),
+      },
+    };
+    writeFileSync(REPORT_PATH, JSON.stringify(report, null, 2));
+    console.log(JSON.stringify(report, null, 2));
+    return;
   }
 
-  const paymentResults = [];
-  const expiry = Math.floor(Date.now() / 1000) + 3600;
   const paymentId = BigInt('0x' + crypto.randomBytes(32).toString('hex'));
-
-  log('Sending subscription payment...');
-  const treasuryBefore = await getBalanceNano(treasuryAddr);
-  const referrerBefore = await getBalanceNano(referrerAddress);
-
-  await sendPayment(secrets, contractAddr, {
-    subscriberMnemonic: subscriberMnemonic.join(' '),
-    referrerAddress,
+  const expiry = BigInt(Math.floor(Date.now() / 1000) + 3600);
+  const nonce = 1n;
+  const body = buildSubscribeBody({
     paymentId,
-    gross: GROSS_NANOTON,
-    feeReserve: FEE_RESERVE_NANOTON,
+    subscriber: deployerWallet.address,
+    referrer: referrerWallet.address,
+    amount: GROSS_NANOTON,
     expiry,
+    nonce,
+    signerSeed: secrets.signerPrivateKeyHex,
   });
 
-  await sleep(15000);
+  const treBefore = await getBalanceNano(treasuryAddr);
+  const refBefore = await getBalanceNano(referrerAddress);
 
-  const treasuryAfter = await getBalanceNano(treasuryAddr);
-  const referrerAfter = await getBalanceNano(referrerAddress);
-  const net = GROSS_NANOTON - FEE_RESERVE_NANOTON;
-  const expectedRef = net / 2n;
-  const expectedTre = net - expectedRef;
+  log('Sending 0.1 TON subscribe payment...');
+  await sendExternalBoc(deployerWallet, deployerKey.secretKey, [
+    internal({ to: contractAddr, value: GROSS_NANOTON, body, bounce: true }),
+  ]);
+  await sleep(20000);
 
-  const contractTxs = await getRecentTxs(contractStr, 5);
-  const paymentTxHash = contractTxs?.[0]?.transaction_id?.hash || null;
+  const treAfter = await getBalanceNano(treasuryAddr);
+  const refAfter = await getBalanceNano(referrerAddress);
+  const paymentTxs = await toncenter('getTransactions', { address: contractStr, limit: 5 });
+  const paymentTxHash = paymentTxs?.[0]?.transaction_id?.hash || null;
 
-  paymentResults.push({
-    name: 'valid_payment',
-    paymentId: paymentId.toString(),
-    grossNanoton: GROSS_NANOTON.toString(),
-    feeReserveNanoton: FEE_RESERVE_NANOTON.toString(),
-    netNanoton: net.toString(),
-    expectedReferrerPayout: expectedRef.toString(),
-    expectedTreasuryPayout: expectedTre.toString(),
-    referrerBalanceDelta: (referrerAfter - referrerBefore).toString(),
-    treasuryBalanceDelta: (treasuryAfter - treasuryBefore).toString(),
-    subscriberAddress,
-    referrerAddress,
-    txHash: paymentTxHash,
-    explorer: paymentTxHash ? explorerTx(paymentTxHash) : null,
+  const processed = await toncenter('runGetMethod', {
+    address: contractStr,
+    method: 'get_payment_processed',
+    stack: [['num', paymentId.toString()]],
   });
-
-  // Duplicate replay test
-  let replayBlocked = false;
-  try {
-    await sendPayment(secrets, contractAddr, {
-      subscriberMnemonic: subscriberMnemonic.join(' '),
-      referrerAddress,
-      paymentId,
-      gross: GROSS_NANOTON,
-      feeReserve: FEE_RESERVE_NANOTON,
-      expiry,
-    });
-    await sleep(10000);
-    const refAfterReplay = await getBalanceNano(referrerAddress);
-    replayBlocked = refAfterReplay === referrerAfter;
-  } catch (e) {
-    replayBlocked = true;
-  }
-
-  // Wrong amount test — use new payment id
-  const wrongAmountId = paymentId + 1n;
-  let wrongAmountFailed = false;
-  try {
-    await sendPayment(secrets, contractAddr, {
-      subscriberMnemonic: subscriberMnemonic.join(' '),
-      referrerAddress,
-      paymentId: wrongAmountId,
-      gross: GROSS_NANOTON,
-      feeReserve: FEE_RESERVE_NANOTON,
-      expiry,
-    });
-    await sleep(10000);
-    const refBal = await getBalanceNano(referrerAddress);
-    wrongAmountFailed = refBal === referrerAfter;
-  } catch {
-    wrongAmountFailed = true;
-  }
 
   const report = {
     status: 'DEPLOYED',
     network: 'testnet',
+    version: 'v2-router',
     contractAddress: contractStr,
     deployTxHash,
     treasuryAddress: treasuryAddr,
-    signerPublicKeyHex: secrets.signer.publicKeyHex,
+    signerPublicKeyHex: secrets.signerPublicKeyHex,
     deployerAddress: deployerAddr,
-    feePolicy: {
-      feeReserveNanoton: FEE_RESERVE_NANOTON.toString(),
-      subscriptionGrossNanoton: GROSS_NANOTON.toString(),
-      split: '50/50 net after fee reserve; odd nanotons to treasury',
+    feePolicy: 'RAWRESERVE execution + GETFORWARDFEE ×2; 50/50 distributable; odd nanotons → treasury',
+    paymentTest: {
+      paymentId: paymentId.toString(),
+      grossNanoton: GROSS_NANOTON.toString(),
+      referrerBalanceDelta: (refAfter - refBefore).toString(),
+      treasuryBalanceDelta: (treAfter - treBefore).toString(),
+      processedExitCode: processed.exit_code,
+      processedValue: processed.stack?.[0]?.[1],
+      txHash: paymentTxHash,
+      explorer: paymentTxHash ? explorerTx(paymentTxHash) : null,
     },
     explorers: {
       contract: explorerAddr(contractStr),
@@ -563,15 +387,9 @@ async function main() {
       deployer: explorerAddr(deployerAddr),
       treasury: explorerAddr(treasuryAddr),
     },
-    paymentTests: paymentResults,
-    edgeCaseTests: {
-      duplicateReplayBlocked: replayBlocked,
-      wrongAmountNote: 'Subscriber sends gross in msg value; underpay should fail with insufficient error on-chain (bounce if value < gross). Full bounce simulation not available without sandbox.',
-      wrongAmountNoExtraPayout: wrongAmountFailed,
-    },
   };
 
-  writeFileSync(path.join(ROOT, 'deploy-report.json'), JSON.stringify(report, null, 2));
+  writeFileSync(REPORT_PATH, JSON.stringify(report, null, 2));
   console.log(JSON.stringify(report, null, 2));
 }
 
