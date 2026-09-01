@@ -244,6 +244,8 @@ async function initWalletFromDeployer(deployerWallet, deployerKey, targetWallet,
   }
 
   const active = await waitForAccountActive(targetStr);
+  // Let deployer wallet seqno settle before the next outbound transfer.
+  await sleep(6000);
   return {
     address: targetStr,
     status: active.status,
@@ -333,6 +335,9 @@ async function runSplitProof() {
   );
   const referrerStr = referrerInit.address;
 
+  // Ensure deployer seqno and chain state are settled before subscribe payment.
+  await sleep(8000);
+
   const paymentId = BigInt('0x' + crypto.randomBytes(32).toString('hex'));
   const nonce = BigInt(crypto.randomBytes(8).readBigUInt64BE(0));
   const expiry = BigInt(Math.floor(Date.now() / 1000) + 3600);
@@ -392,6 +397,7 @@ async function runSplitProof() {
 
   const bounced = (refDelta === 0n && outbound.referrer > 0n)
     || (treDelta === 0n && outbound.treasury > 0n);
+  const paymentSucceeded = success === true || computeExit === 0;
 
   console.log(JSON.stringify({
     mode: 'split-proof',
@@ -431,12 +437,13 @@ async function runSplitProof() {
     contractBalanceAfterNanoton: contractAfter.toString(),
     splitApprox5050: refDelta > 0n && treDelta > 0n && (refDelta === treDelta || treDelta === refDelta + 1n),
     payoutsBounced: bounced,
+    paymentSucceeded,
     computeExitCode: computeExit,
     actionExitCode: actionExit,
     txSuccess: success,
   }, null, 2));
 
-  if (bounced) process.exit(3);
+  if (!paymentSucceeded || bounced) process.exit(3);
 }
 
 async function main() {
