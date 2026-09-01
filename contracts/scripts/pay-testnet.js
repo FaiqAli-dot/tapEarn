@@ -9,6 +9,10 @@
  *   TON_TESTNET_TREASURY_ADDRESS=0QBVP_... \
  *   node scripts/pay-testnet.js
  *
+ * Init treasury + ephemeral referrer, then pay (split proof):
+ *   TON_TREASURY_MNEMONIC=... (plus vars above) \
+ *   node scripts/pay-testnet.js --split-proof
+ *
  * Replay test (same payment_id must bounce):
  *   ... node scripts/pay-testnet.js --replay <paymentId> <nonce> <referrerAddress>
  */
@@ -26,8 +30,10 @@ import { keyPairFromSeed, mnemonicNew, mnemonicToPrivateKey, sign } from '@ton/c
 
 const OP_SUBSCRIBE = 0x591a2b3c;
 const GROSS_NANOTON = 100_000_000n;
+const INIT_NANOTON = 50_000_000n;
 const TESTNET_RPC = 'https://testnet.toncenter.com/api/v2/jsonRPC';
 const TESTNET_REST = 'https://testnet.toncenter.com/api/v2';
+const TONAPI = 'https://testnet.tonapi.io/v2';
 let lastRpcAt = 0;
 
 function explorerAddr(addr) {
@@ -36,6 +42,10 @@ function explorerAddr(addr) {
 
 function explorerTx(hash) {
   return `https://testnet.tonscan.org/tx/${hash}`;
+}
+
+function addrKey(addr) {
+  return Address.parse(addr).toRawString();
 }
 
 async function sleep(ms) {
@@ -86,6 +96,19 @@ async function toncenterGet(path, query = {}) {
   return json.result;
 }
 
+async function tonapiAccount(rawOrFriendly) {
+  const raw = Address.parse(rawOrFriendly).toRawString();
+  const res = await fetch(`${TONAPI}/accounts/${encodeURIComponent(raw)}`);
+  if (!res.ok) throw new Error(`tonapi account ${raw}: ${res.status}`);
+  return res.json();
+}
+
+async function tonapiTx(hash) {
+  const res = await fetch(`${TONAPI}/blockchain/transactions/${encodeURIComponent(hash)}`);
+  if (!res.ok) throw new Error(`tonapi tx ${hash}: ${res.status}`);
+  return res.json();
+}
+
 async function getBalanceNano(address) {
   return BigInt(await toncenterGet('getAddressBalance', { address }));
 }
@@ -95,7 +118,7 @@ async function getWalletSeqno(address) {
   return Number(info.seqno ?? 0);
 }
 
-async function sendExternalBoc(wallet, secretKey, messages, init) {
+async function sendExternalBoc(wallet, secretKey, messages) {
   const seqno = await getWalletSeqno(wallet.address.toString({ bounceable: true, testOnly: true }));
   const transfer = wallet.createTransfer({
     seqno,
@@ -110,10 +133,12 @@ async function sendExternalBoc(wallet, secretKey, messages, init) {
   });
   const boc = beginCell().store(storeMessage(ext)).endCell().toBoc().toString('base64');
   await toncenter('sendBoc', { boc });
+  return seqno;
 }
 
-function loadSecretsFromEnv() {
+function loadSecretsFromEnv({ requireTreasuryMnemonic = false } = {}) {
   const deployerMnemonic = process.env.TON_DEPLOYER_MNEMONIC;
+  const treasuryMnemonic = process.env.TON_TREASURY_MNEMONIC;
   const contractAddress = process.env.TON_TESTNET_REFERRAL_CONTRACT_ADDRESS;
   const treasuryAddress = process.env.TON_TESTNET_TREASURY_ADDRESS;
   const signerPrivateKeyHex = process.env.TON_PAYMENT_SIGNER_PRIVATE_KEY?.replace(/^0x/, '');
@@ -122,8 +147,17 @@ function loadSecretsFromEnv() {
   if (!contractAddress) throw new Error('TON_TESTNET_REFERRAL_CONTRACT_ADDRESS is required');
   if (!treasuryAddress) throw new Error('TON_TESTNET_TREASURY_ADDRESS is required');
   if (!signerPrivateKeyHex) throw new Error('TON_PAYMENT_SIGNER_PRIVATE_KEY is required');
+  if (requireTreasuryMnemonic && !treasuryMnemonic) {
+    throw new Error('TON_TREASURY_MNEMONIC is required for --split-proof');
+  }
 
-  return { deployerMnemonic, contractAddress, treasuryAddress, signerPrivateKeyHex };
+  return {
+    deployerMnemonic,
+    treasuryMnemonic,
+    contractAddress,
+    treasuryAddress,
+    signerPrivateKeyHex,
+  };
 }
 
 /** Match backend/src/services/tonContractPayload.js — buildAuthCell */
@@ -162,6 +196,65 @@ function buildSubscribeBody({ paymentId, subscriber, referrer, amount, expiry, n
     .endCell();
 }
 
+async function waitForAccountActive(address, timeoutMs = 120000) {
+  const key = addrKey(address);
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const acct = await tonapiAccount(key);
+    if (acct.status === 'active' && BigInt(acct.balance || 0) > 0n) {
+      return acct;
+    }
+    await sleep(5000);
+  }
+  throw new Error(`Timed out waiting for account ${address} to become active`);
+}
+
+async function initWalletFromDeployer(deployerWallet, deployerKey, targetWallet, label) {
+  const targetStr = targetWallet.address.toString({ bounceable: false, testOnly: true });
+  const acct = await tonapiAccount(targetStr);
+  if (acct.status === 'active' && BigInt(acct.balance || 0) > 0n) {
+    return {
+      address: targetStr,
+      status: acct.status,
+      balanceNanoton: acct.balance.toString(),
+      skipped: true,
+      label,
+    };
+  }
+
+  const deployerStr = deployerWallet.address.toString({ bounceable: true, testOnly: true });
+  const preTxs = await toncenter('getTransactions', { address: deployerStr, limit: 1 });
+  const afterLt = preTxs?.[0]?.transaction_id?.lt || '0';
+
+  await sendExternalBoc(deployerWallet, deployerKey.secretKey, [
+    internal({
+      to: targetWallet.address,
+      value: INIT_NANOTON,
+      init: targetWallet.init,
+      bounce: false,
+    }),
+  ]);
+
+  const deadline = Date.now() + 120000;
+  while (Date.now() < deadline) {
+    const txs = await toncenter('getTransactions', { address: deployerStr, limit: 5 });
+    const match = txs?.find((tx) => BigInt(tx.transaction_id?.lt || 0) > BigInt(afterLt));
+    if (match) break;
+    await sleep(4000);
+  }
+
+  const active = await waitForAccountActive(targetStr);
+  // Let deployer wallet seqno settle before the next outbound transfer.
+  await sleep(6000);
+  return {
+    address: targetStr,
+    status: active.status,
+    balanceNanoton: active.balance.toString(),
+    skipped: false,
+    label,
+  };
+}
+
 async function waitForContractTx(contractStr, afterLt, timeoutMs = 120000) {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
@@ -180,18 +273,185 @@ function parseInboundValue(tx) {
 }
 
 function parseOutboundDeltas(tx, treasuryStr, referrerStr) {
+  const treasuryKey = addrKey(treasuryStr);
+  const referrerKey = addrKey(referrerStr);
   const out = { treasury: 0n, referrer: 0n, messages: [] };
   for (const msg of tx.out_msgs || []) {
     const dest = msg.destination || '';
     const value = BigInt(msg.value || 0);
     out.messages.push({ destination: dest, valueNanoton: value.toString() });
-    if (dest === treasuryStr) out.treasury += value;
-    if (dest === referrerStr) out.referrer += value;
+    const destKey = addrKey(dest);
+    if (destKey === treasuryKey) out.treasury += value;
+    if (destKey === referrerKey) out.referrer += value;
   }
   return out;
 }
 
+async function runSplitProof() {
+  const secrets = loadSecretsFromEnv({ requireTreasuryMnemonic: true });
+  const contractStr = secrets.contractAddress;
+  const treasuryStr = secrets.treasuryAddress;
+  const contract = Address.parse(contractStr);
+
+  const deployerKey = await mnemonicToPrivateKey(secrets.deployerMnemonic.split(' '));
+  const deployerWallet = WalletContractV4.create({ workchain: 0, publicKey: deployerKey.publicKey });
+  const deployerStr = deployerWallet.address.toString({ bounceable: false, testOnly: true });
+
+  const treasuryKey = await mnemonicToPrivateKey(secrets.treasuryMnemonic.split(' '));
+  const treasuryWallet = WalletContractV4.create({ workchain: 0, publicKey: treasuryKey.publicKey });
+  const treasuryFromMnemonic = treasuryWallet.address.toString({ bounceable: false, testOnly: true });
+  if (addrKey(treasuryFromMnemonic) !== addrKey(treasuryStr)) {
+    throw new Error(`Treasury mnemonic address ${treasuryFromMnemonic} != env ${treasuryStr}`);
+  }
+
+  const balance = await getBalanceNano(deployerStr);
+  const minRequired = INIT_NANOTON * 2n + GROSS_NANOTON + 100_000_000n;
+  if (balance < minRequired) {
+    console.log(JSON.stringify({
+      status: 'INSUFFICIENT_DEPLOYER_BALANCE',
+      deployerAddress: deployerStr,
+      balanceNanoton: balance.toString(),
+      requiredMinNanoton: minRequired.toString(),
+      explorer: explorerAddr(deployerStr),
+    }, null, 2));
+    process.exit(2);
+  }
+
+  const treasuryInit = await initWalletFromDeployer(
+    deployerWallet,
+    deployerKey,
+    treasuryWallet,
+    'treasury'
+  );
+
+  const referrerMnemonic = await mnemonicNew(24);
+  const referrerKey = await mnemonicToPrivateKey(referrerMnemonic);
+  const referrerWallet = WalletContractV4.create({ workchain: 0, publicKey: referrerKey.publicKey });
+  const referrerInit = await initWalletFromDeployer(
+    deployerWallet,
+    deployerKey,
+    referrerWallet,
+    'referrer'
+  );
+  const referrerStr = referrerInit.address;
+
+  // Ensure deployer seqno and chain state are settled before subscribe payment.
+  await sleep(8000);
+
+  const paymentId = BigInt('0x' + crypto.randomBytes(32).toString('hex'));
+  const nonce = BigInt(crypto.randomBytes(8).readBigUInt64BE(0));
+  const expiry = BigInt(Math.floor(Date.now() / 1000) + 3600);
+  const body = buildSubscribeBody({
+    paymentId,
+    subscriber: deployerWallet.address,
+    referrer: referrerWallet.address,
+    amount: GROSS_NANOTON,
+    expiry,
+    nonce,
+    signerSeed: secrets.signerPrivateKeyHex,
+  });
+
+  const contractBefore = await getBalanceNano(contractStr);
+  const treBefore = await getBalanceNano(treasuryStr);
+  const refBefore = await getBalanceNano(referrerStr);
+
+  const preTxs = await toncenter('getTransactions', { address: contractStr, limit: 1 });
+  const afterLt = preTxs?.[0]?.transaction_id?.lt || '0';
+
+  await sendExternalBoc(deployerWallet, deployerKey.secretKey, [
+    internal({ to: contract, value: GROSS_NANOTON, body, bounce: true }),
+  ]);
+
+  const tx = await waitForContractTx(contractStr, afterLt);
+  if (!tx) throw new Error('Timed out waiting for contract transaction');
+
+  const txHash = tx.transaction_id?.hash;
+  const inbound = parseInboundValue(tx);
+  const outbound = parseOutboundDeltas(tx, treasuryStr, referrerStr);
+
+  let tonapiDetails = null;
+  try {
+    tonapiDetails = await tonapiTx(txHash);
+  } catch {
+    // tonapi may lag; fall back to toncenter fields
+  }
+
+  await sleep(10000);
+
+  const contractAfter = await getBalanceNano(contractStr);
+  const treAfter = await getBalanceNano(treasuryStr);
+  const refAfter = await getBalanceNano(referrerStr);
+  const treAcct = await tonapiAccount(treasuryStr);
+  const refAcct = await tonapiAccount(referrerStr);
+
+  const refDelta = refAfter - refBefore;
+  const treDelta = treAfter - treBefore;
+
+  const computeExit = tonapiDetails?.compute_phase?.exit_code
+    ?? tx.description?.compute_ph?.exit_code
+    ?? null;
+  const actionExit = tonapiDetails?.action_phase?.result_code
+    ?? tx.description?.action?.result_code
+    ?? null;
+  const success = tonapiDetails?.success ?? null;
+
+  const bounced = (refDelta === 0n && outbound.referrer > 0n)
+    || (treDelta === 0n && outbound.treasury > 0n);
+  const paymentSucceeded = success === true || computeExit === 0;
+
+  console.log(JSON.stringify({
+    mode: 'split-proof',
+    network: 'testnet',
+    version: 'v2-router',
+    contractAddress: contractStr,
+    contractExplorer: explorerAddr(contractStr),
+    deployerAddress: deployerStr,
+    initTransfers: {
+      treasury: { ...treasuryInit, explorer: explorerAddr(treasuryInit.address) },
+      referrer: { ...referrerInit, explorer: explorerAddr(referrerInit.address) },
+    },
+    treasuryAddress: treasuryStr,
+    treasuryExplorer: explorerAddr(treasuryStr),
+    treasuryStatusAfter: treAcct.status,
+    referrerAddress: referrerStr,
+    referrerExplorer: explorerAddr(referrerStr),
+    referrerStatusAfter: refAcct.status,
+    paymentId: paymentId.toString(),
+    nonce: nonce.toString(),
+    grossNanoton: GROSS_NANOTON.toString(),
+    txHash,
+    txExplorer: txHash ? explorerTx(txHash) : null,
+    inboundValueNanoton: inbound?.toString() ?? null,
+    treasuryBalanceBeforeNanoton: treBefore.toString(),
+    treasuryBalanceAfterNanoton: treAfter.toString(),
+    treasuryReceivedNanoton: treDelta.toString(),
+    referrerBalanceBeforeNanoton: refBefore.toString(),
+    referrerBalanceAfterNanoton: refAfter.toString(),
+    referrerReceivedNanoton: refDelta.toString(),
+    outboundFromContract: {
+      treasuryNanoton: outbound.treasury.toString(),
+      referrerNanoton: outbound.referrer.toString(),
+      messages: outbound.messages,
+    },
+    contractBalanceBeforeNanoton: contractBefore.toString(),
+    contractBalanceAfterNanoton: contractAfter.toString(),
+    splitApprox5050: refDelta > 0n && treDelta > 0n && (refDelta === treDelta || treDelta === refDelta + 1n),
+    payoutsBounced: bounced,
+    paymentSucceeded,
+    computeExitCode: computeExit,
+    actionExitCode: actionExit,
+    txSuccess: success,
+  }, null, 2));
+
+  if (!paymentSucceeded || bounced) process.exit(3);
+}
+
 async function main() {
+  if (process.argv[2] === '--split-proof') {
+    await runSplitProof();
+    return;
+  }
+
   const secrets = loadSecretsFromEnv();
   const contractStr = secrets.contractAddress;
   const treasuryStr = secrets.treasuryAddress;
