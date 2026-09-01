@@ -310,7 +310,11 @@ async function main() {
     inboundValueNanoton: inbound?.toString() ?? null,
     referrerReceivedNanoton: refDelta.toString(),
     treasuryReceivedNanoton: treDelta.toString(),
-    outboundFromContract: outbound,
+    outboundFromContract: {
+      treasuryNanoton: outbound.treasury.toString(),
+      referrerNanoton: outbound.referrer.toString(),
+      messages: outbound.messages,
+    },
     contractBalanceBeforeNanoton: contractBefore.toString(),
     contractBalanceAfterNanoton: contractAfter.toString(),
     splitSumNanoton: distributableApprox.toString(),
