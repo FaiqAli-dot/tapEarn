@@ -28,21 +28,25 @@ Backend quotes mirror this with configurable `TON_TESTNET_FWD_FEE_NANOTON` estim
 | Item | Value |
 | --- | --- |
 | Network | `testnet` |
-| Status | **DEPLOYED** (live 0.1 TON payment **BLOCKED** — underfunded deployer) |
-| Contract | `0QDb2mg_3L8FMmA-wiX5c8Eec9PDz8OZVufWZMmdI7xUgJ3w` |
+| Status | **LIVE** — 0.1 TON split proven on-chain; replay rejected (exit 104) |
+| Contract | `0QDb2mg_3L8FMmA-wiX5c8Eec9PDz8OZVufWZmmdI7xUgJ3w` |
 | Deploy tx | `7/jllwi5QLFDH52nC6Mp1SMrrbwfxSisRmZ4UKddoYU=` |
 | Treasury | `0QBVP_9rEHfTB8iextldwtqq0ugRUtaccJioD8Z_gWSprS1T` |
 | Signer pubkey | `b2fef7892defd10b586ebdb66da83c94e7a6faffbf23681d712193cd51494736` |
-| Deployer | `0QDDV5J02yNB8mEU8GfXqa9fqz0X6nCP8KwgketmbIFRgIJU` (~0.09 TON remaining) |
+| Deployer | `0QDDV5J02yNB8mEU8GfXqa9fqz0X6nCP8KwgketmbIFRgIJU` |
 
 ### V1 contract (superseded — do not use for new payments)
 
 `0QCxSMBZy7Z9PkkrmIE-2H-tz4H6BsVGxXeue9pbI_uu6Xf2` — had admin/pause and hardcoded fee_reserve; replaced by V2 router.
 
-### Explorers (V2)
+### On-chain verification (V2)
 
-- Contract: https://testnet.tonscan.org/address/0QDb2mg_3L8FMmA-wiX5c8Eec9PDz8OZVufWZMmdI7xUgJ3w
-- Deploy tx: https://testnet.tonscan.org/tx/7/jllwi5QLFDH52nC6Mp1SMrrbwfxSisRmZ4UKddoYU=
+| Event | Link |
+| --- | --- |
+| Contract | https://testnet.tonscan.org/address/0QDb2mg_3L8FMmA-wiX5c8Eec9PDz8OZVufWZMmdI7xUgJ3w |
+| Deploy tx | https://testnet.tonscan.org/tx/7/jllwi5QLFDH52nC6Mp1SMrrbwfxSisRmZ4UKddoYU= |
+| 0.1 TON split (46,143,066 / 46,143,066 nanotons, no bounce) | https://testnet.tonscan.org/tx/%2FcNd0Y8r0FBIQ07SIFdxV4mu0Rcz6ASQ9sY6quZ1J%2F4%3D |
+| Replay rejected (exit 104) | https://testnet.tonscan.org/tx/ULhTVMc9Z20WjfH6JT4k4lscG/6CRwbYFUn1ngXtZt0= |
 
 ```bash
 cd contracts

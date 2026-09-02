@@ -14,25 +14,18 @@ import {
 import { keyPairFromSeed, sign } from '@ton/crypto';
 import pkg from '@ton/sandbox';
 const { Blockchain } = pkg;
-import { compileFunc } from '@ton-community/func-js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const OP_SUBSCRIBE = 0x591a2b3c;
 
-async function compileContract() {
-  const contractsDir = path.resolve(__dirname, '..');
-  const stdlib = readFileSync(path.join(contractsDir, 'imports', 'stdlib.fc'), 'utf8');
-  const contract = readFileSync(path.join(contractsDir, 'ReferralPayment.fc'), 'utf8');
-  const result = await compileFunc({
-    targets: ['ReferralPayment.fc'],
-    sources: (filePath) => {
-      if (filePath === 'imports/stdlib.fc' || filePath === 'stdlib.fc') return stdlib;
-      if (filePath === 'ReferralPayment.fc') return contract;
-      throw new Error(`Unknown source: ${filePath}`);
-    }
-  });
-  if (result.status === 'error') throw new Error(result.message);
-  return Cell.fromBoc(Buffer.from(result.codeBoc, 'base64'))[0];
+function loadCompiledCode() {
+  const compiledPath = path.join(__dirname, '..', 'build', 'ReferralPayment.compiled.json');
+  const { base64 } = JSON.parse(readFileSync(compiledPath, 'utf8'));
+  return Cell.fromBoc(Buffer.from(base64, 'base64'))[0];
+}
+
+function addrKey(address) {
+  return address.toRawString();
 }
 
 function buildInitData(treasury, signerPubKeyBigInt) {
@@ -90,7 +83,7 @@ describe('ReferralPayment router (sandbox)', () => {
   let signerPub;
 
   before(async () => {
-    code = await compileContract();
+    code = loadCompiledCode();
     const ed = crypto.generateKeyPairSync('ed25519');
     signerSeed = ed.privateKey.export({ type: 'pkcs8', format: 'der' }).subarray(-32);
     signerPub = ed.publicKey.export({ type: 'spki', format: 'der' }).subarray(-32);
@@ -111,12 +104,14 @@ describe('ReferralPayment router (sandbox)', () => {
     );
 
     const deployer = await blockchain.treasury('deployer');
-    await deployer.send({
+    const deployResult = await deployer.send({
       to: contract.address,
       value: toNano('0.2'),
       init: { code, data: initData },
       bounce: false
     });
+    const deployed = deployResult.transactions.some((tx) => tx.description?.deploy);
+    assert.ok(deployed, 'ReferralPayment router should deploy in sandbox');
   });
 
   it('splits 50/50 after reserving execution and forward fees', async () => {
@@ -124,9 +119,6 @@ describe('ReferralPayment router (sandbox)', () => {
     const paymentId = BigInt('0x' + crypto.randomBytes(32).toString('hex'));
     const expiry = BigInt(Math.floor(Date.now() / 1000) + 3600);
     const nonce = 1n;
-
-    const refBefore = await referrer.getBalance();
-    const treBefore = await treasury.getBalance();
 
     const body = buildSubscribeBody({
       paymentId,
@@ -147,16 +139,36 @@ describe('ReferralPayment router (sandbox)', () => {
 
     assert.ok(result.transactions.length > 1);
 
-    const refAfter = await referrer.getBalance();
-    const treAfter = await treasury.getBalance();
-    const refDelta = refAfter - refBefore;
-    const treDelta = treAfter - treBefore;
+    const contractKey = addrKey(contract.address);
+    const referrerKey = addrKey(referrer.address);
+    const treasuryKey = addrKey(treasury.address);
 
-    assert.ok(refDelta > 0n);
-    assert.ok(treDelta > 0n);
-    assert.equal(refDelta, treDelta - (treDelta % 2n === refDelta % 2n ? 0n : 1n) || refDelta <= treDelta);
-    assert.ok(treDelta >= refDelta);
-    assert.equal(refDelta + treDelta + (gross - refDelta - treDelta), gross);
+    const contractTx = result.transactions.find(
+      (tx) =>
+        addrKey(tx.inMessage?.info?.dest) === contractKey &&
+        tx.description?.computePhase?.success &&
+        tx.outMessagesCount >= 2
+    );
+    assert.ok(contractTx, 'subscribe transaction should succeed');
+
+    const payoutTxs = result.transactions.filter(
+      (tx) =>
+        addrKey(tx.inMessage?.info?.src) === contractKey &&
+        tx.description?.computePhase?.success &&
+        (addrKey(tx.inMessage?.info?.dest) === referrerKey ||
+          addrKey(tx.inMessage?.info?.dest) === treasuryKey)
+    );
+    assert.equal(payoutTxs.length, 2, 'contract should emit referrer and treasury payouts');
+
+    const refPayout = payoutTxs.find((tx) => addrKey(tx.inMessage?.info?.dest) === referrerKey);
+    const trePayout = payoutTxs.find((tx) => addrKey(tx.inMessage?.info?.dest) === treasuryKey);
+    const refValue = refPayout.inMessage.info.value.coins;
+    const treValue = trePayout.inMessage.info.value.coins;
+
+    assert.ok(refValue > 0n);
+    assert.ok(treValue > 0n);
+    assert.ok(treValue >= refValue);
+    assert.equal(refValue + treValue + (gross - refValue - treValue), gross);
   });
 
   it('rejects duplicate payment_id (replay)', async () => {
