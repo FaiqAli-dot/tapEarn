@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react'
 import { User, TelegramWebApp } from '../types/game'
+import { isRealTelegramWebApp } from '../utils/telegramEnv'
 
 declare global {
   interface Window {
@@ -7,27 +8,6 @@ declare global {
       WebApp: TelegramWebApp
     }
   }
-}
-
-function isLocalDevHost(): boolean {
-  const host = window.location.hostname
-  return host === 'localhost' || host === '127.0.0.1' || host === '0.0.0.0'
-}
-
-/**
- * True only inside a real Telegram Mini App (signed initData or Telegram native client).
- * telegram-web-app.js in a normal browser creates a stub without mainButton/backButton.
- */
-function isRealTelegramWebApp(tg: TelegramWebApp): boolean {
-  if (isLocalDevHost()) {
-    return false
-  }
-  if (tg.initData && tg.initData.length > 0) {
-    return true
-  }
-  const platform = (tg.platform || '').toLowerCase()
-  const nativePlatforms = ['ios', 'android', 'macos', 'tdesktop', 'weba', 'webk', 'unigram']
-  return nativePlatforms.includes(platform) && Boolean(tg.initDataUnsafe?.user?.id)
 }
 
 function readDevUserFromUrl(): User {
@@ -95,7 +75,6 @@ export const useTelegram = () => {
         if (typeof tg.onEvent === 'function') {
           tg.onEvent('themeChanged', () => applyThemeParams(tg))
         }
-        // mainButton/backButton handlers are registered via setMainButton/setBackButton when needed
       } catch (err) {
         console.warn('Telegram WebApp init partial failure:', err)
       }

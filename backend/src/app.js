@@ -5,6 +5,7 @@ import videoCodeRoutes from './routes/videoCodeRoutes.js';
 import authRoutes from './routes/authRoutes.js';
 import campaignRoutes from './routes/campaignRoutes.js';
 import adminCampaignRoutes from './routes/adminCampaignRoutes.js';
+import adminPanelRoutes from './routes/adminPanelRoutes.js';
 import paymentRoutes from './routes/paymentRoutes.js';
 import tonProofRoutes from './routes/tonProofRoutes.js';
 import { requireAuth } from './middleware/auth.js';
@@ -62,6 +63,7 @@ export function createApp() {
   app.use('/api/video-codes', requireAuth, requireAdmin, videoCodeRoutes);
   app.use('/api/campaigns', campaignRoutes);
   app.use('/api/admin/campaigns', adminCampaignRoutes);
+  app.use('/api/admin-panel', adminPanelRoutes);
   app.use('/api/payments', paymentRoutes);
   app.use('/api/ton-proof', tonProofRoutes);
 
