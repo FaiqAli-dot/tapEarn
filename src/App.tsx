@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react'
-import { Routes, Route, useLocation } from 'react-router-dom'
+import { Routes, Route, useLocation, Navigate, Link } from 'react-router-dom'
 import { useTonAddress } from '@tonconnect/ui-react'
 import { motion, AnimatePresence } from 'framer-motion'
 
@@ -11,6 +11,8 @@ import InviteFriendsScreen from './screens/InviteFriendsScreen'
 import LeaderboardScreen from './screens/LeaderboardScreen'
 import VideoCodeAdmin from './components/VideoCodeAdmin'
 import ProtectedAdminRoute from './components/ProtectedAdminRoute'
+import MarketingHomePage from './pages/MarketingHomePage'
+import AdminPanelPage from './pages/AdminPanelPage'
 
 import BottomNavigation from './components/BottomNavigation'
 import TopBar from './components/TopBar'
@@ -18,8 +20,20 @@ import TopBar from './components/TopBar'
 import { useGameState } from './hooks/useGameState'
 import { useTelegram } from './hooks/useTelegram'
 import { apiService } from './services/api'
+import { shouldRedirectRootToHome } from './utils/telegramEnv'
 
-function App() {
+/** Public GitHub Pages routes — no Telegram JWT / Mini App chrome. */
+function PublicRoutes() {
+  return (
+    <Routes>
+      <Route path="/home" element={<MarketingHomePage />} />
+      <Route path="/admin-panel" element={<AdminPanelPage />} />
+      <Route path="*" element={<Navigate to="/home" replace />} />
+    </Routes>
+  )
+}
+
+function MiniAppShell() {
   const location = useLocation()
   const address = useTonAddress()
   const connected = !!address
@@ -42,7 +56,17 @@ function App() {
   } = useGameState(currentUserId || undefined)
 
   useEffect(() => {
+    if (location.pathname === '/' && shouldRedirectRootToHome()) {
+      return
+    }
+  }, [location.pathname])
+
+  useEffect(() => {
     if (!isReady) return
+    if (location.pathname === '/' && shouldRedirectRootToHome()) {
+      setIsLoading(false)
+      return
+    }
 
     const initGame = async () => {
       setIsLoading(true)
@@ -111,13 +135,17 @@ function App() {
     }
 
     initGame()
-  }, [isReady]) // eslint-disable-line react-hooks/exhaustive-deps
+  }, [isReady, location.pathname]) // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
     if (typeof window !== 'undefined') {
       ;(window as any).refreshGameState = refreshGameState
     }
   }, [refreshGameState])
+
+  if (location.pathname === '/' && shouldRedirectRootToHome()) {
+    return <Navigate to="/home" replace />
+  }
 
   if (isLoading) {
     return (
@@ -136,9 +164,12 @@ function App() {
         <div className="text-center max-w-sm">
           <h1 className="text-xl font-bold text-gray-800 mb-2">Sign-in required</h1>
           <p className="text-gray-600 mb-4">{authError}</p>
-          <p className="text-sm text-gray-500">
+          <p className="text-sm text-gray-500 mb-4">
             Open TapEarn from @YORZAEARNBOT, or configure local DEV auth.
           </p>
+          <Link to="/home" className="text-sm text-blue-600 hover:underline">
+            Visit the public YORZA home page
+          </Link>
         </div>
       </div>
     )
@@ -263,6 +294,20 @@ function App() {
       <BottomNavigation currentPath={location.pathname} />
     </div>
   )
+}
+
+function App() {
+  const location = useLocation()
+  const isPublic =
+    location.pathname === '/home' ||
+    location.pathname === '/admin-panel' ||
+    location.pathname.startsWith('/admin-panel/')
+
+  if (isPublic) {
+    return <PublicRoutes />
+  }
+
+  return <MiniAppShell />
 }
 
 export default App

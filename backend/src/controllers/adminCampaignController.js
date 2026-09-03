@@ -2,10 +2,12 @@ import {
   createCampaign,
   updateCampaign,
   deactivateCampaign,
+  deleteCampaign,
   getCampaignById,
   getCampaignStats,
   listAllCampaigns
 } from '../services/campaignService.js';
+import { DEFAULT_SPONSORED_AD_REWARD } from '../services/adminPanelService.js';
 
 export async function adminListCampaigns(req, res) {
   try {
@@ -35,7 +37,20 @@ export async function adminCreateCampaign(req, res) {
       rewardPoints, startDate, endDate, maxCompletions, status
     } = req.body;
 
-    if (!type || !title || rewardPoints === undefined) {
+    if (!title) {
+      return res.status(400).json({
+        success: false,
+        error: 'title is required'
+      });
+    }
+
+    const resolvedType = type || 'SPONSORED_POST';
+    const resolvedReward =
+      rewardPoints === undefined || rewardPoints === null
+        ? DEFAULT_SPONSORED_AD_REWARD
+        : rewardPoints;
+
+    if (resolvedReward === undefined) {
       return res.status(400).json({
         success: false,
         error: 'type, title, and rewardPoints are required'
@@ -43,12 +58,12 @@ export async function adminCreateCampaign(req, res) {
     }
 
     const campaign = await createCampaign({
-      type,
+      type: resolvedType,
       title,
-      description,
-      url,
-      thumbnail,
-      rewardPoints,
+      description: description || '',
+      url: url || '',
+      thumbnail: thumbnail || '',
+      rewardPoints: resolvedReward,
       startDate: startDate ? new Date(startDate) : undefined,
       endDate: endDate ? new Date(endDate) : null,
       maxCompletions,
@@ -73,13 +88,34 @@ export async function adminUpdateCampaign(req, res) {
   }
 }
 
-export async function adminDeleteCampaign(req, res) {
+export async function adminDeactivateCampaign(req, res) {
   try {
     const campaign = await deactivateCampaign(req.params.id);
     if (!campaign) {
       return res.status(404).json({ success: false, error: 'Campaign not found' });
     }
     res.json({ success: true, data: campaign, message: 'Campaign deactivated' });
+  } catch (error) {
+    res.status(400).json({ success: false, error: error.message });
+  }
+}
+
+export async function adminDeleteCampaign(req, res) {
+  try {
+    // Soft-deactivate when ?soft=1 (legacy); otherwise permanently delete
+    if (req.query.soft === '1' || req.query.soft === 'true') {
+      const campaign = await deactivateCampaign(req.params.id);
+      if (!campaign) {
+        return res.status(404).json({ success: false, error: 'Campaign not found' });
+      }
+      return res.json({ success: true, data: campaign, message: 'Campaign deactivated' });
+    }
+
+    const campaign = await deleteCampaign(req.params.id);
+    if (!campaign) {
+      return res.status(404).json({ success: false, error: 'Campaign not found' });
+    }
+    res.json({ success: true, data: campaign, message: 'Campaign deleted' });
   } catch (error) {
     res.status(400).json({ success: false, error: error.message });
   }

@@ -57,6 +57,12 @@ export default {
           700: '#a21caf',
           800: '#86198f',
           900: '#701a75',
+        },
+        yorza: {
+          black: '#050505',
+          gold: '#e8c547',
+          cyan: '#2ef2ff',
+          ink: '#0a0c10',
         }
       },
       animation: {
@@ -85,6 +91,8 @@ export default {
       },
       fontFamily: {
         'telegram': ['Inter', 'system-ui', 'sans-serif'],
+        'yorza-display': ['Syne', 'system-ui', 'sans-serif'],
+        'yorza-body': ['Outfit', 'system-ui', 'sans-serif'],
       }
     },
   },

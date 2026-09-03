@@ -1,5 +1,6 @@
 import type {
   Campaign,
+  CampaignType,
   EngagementData,
   LeaderboardEntry,
   LeaderboardMyRank,
@@ -7,6 +8,7 @@ import type {
 } from '../types/game';
 
 const SESSION_TOKEN_KEY = 'tapearn_session_token';
+const ADMIN_PANEL_TOKEN_KEY = 'yorza_admin_panel_token';
 const API_BASE_STORAGE_KEY = 'tapearn_api_base_url';
 const PRODUCTION_API_BASE_URL = 'https://yorza.onrender.com/api';
 
@@ -88,13 +90,37 @@ export interface WalletStatePayload {
   walletAddress?: string;
 }
 
+export interface AdminCampaign {
+  _id: string;
+  type: CampaignType;
+  title: string;
+  description?: string;
+  url?: string;
+  thumbnail?: string;
+  rewardPoints: number;
+  startDate?: string;
+  endDate?: string | null;
+  maxCompletions?: number | null;
+  status: string;
+  completionCount?: number;
+}
+
+export interface AdminCampaignStats {
+  campaign: AdminCampaign;
+  completionCount: number;
+  totalRewardDistributed: number;
+  status: string;
+}
+
 class ApiService {
   private userId: string | null = null;
   private sessionToken: string | null = null;
+  private adminPanelToken: string | null = null;
 
   constructor() {
     if (typeof window !== 'undefined') {
       this.sessionToken = localStorage.getItem(SESSION_TOKEN_KEY);
+      this.adminPanelToken = localStorage.getItem(ADMIN_PANEL_TOKEN_KEY);
       getApiBaseUrl();
     }
   }
@@ -117,12 +143,34 @@ class ApiService {
     return this.sessionToken;
   }
 
+  setAdminPanelToken(token: string | null) {
+    this.adminPanelToken = token;
+    if (typeof window === 'undefined') return;
+    if (token) {
+      localStorage.setItem(ADMIN_PANEL_TOKEN_KEY, token);
+    } else {
+      localStorage.removeItem(ADMIN_PANEL_TOKEN_KEY);
+    }
+  }
+
+  getAdminPanelToken() {
+    return this.adminPanelToken;
+  }
+
+  clearAdminPanelSession() {
+    this.setAdminPanelToken(null);
+  }
+
   clearSession() {
     this.setSessionToken(null);
     this.userId = null;
   }
 
-  private async request(endpoint: string, options: RequestInit = {}) {
+  private async request(
+    endpoint: string,
+    options: RequestInit = {},
+    authMode: 'session' | 'admin-panel' | 'none' = 'session'
+  ) {
     const url = `${getApiBaseUrl()}${endpoint}`;
 
     const headers: Record<string, string> = {
@@ -130,7 +178,9 @@ class ApiService {
       ...(options.headers as Record<string, string> | undefined),
     };
 
-    if (this.sessionToken) {
+    if (authMode === 'admin-panel' && this.adminPanelToken) {
+      headers.Authorization = `Bearer ${this.adminPanelToken}`;
+    } else if (authMode === 'session' && this.sessionToken) {
       headers.Authorization = `Bearer ${this.sessionToken}`;
     }
 
@@ -308,8 +358,8 @@ class ApiService {
     return result.data;
   }
 
-  async getAllVideoCodes() {
-    const result = await this.request('/video-codes', { method: 'GET' });
+  async getAllVideoCodes(authMode: 'session' | 'admin-panel' = 'session') {
+    const result = await this.request('/video-codes', { method: 'GET' }, authMode);
     return result.data;
   }
 
@@ -322,17 +372,22 @@ class ApiService {
       timeToShow?: number;
       points?: number;
       isActive?: boolean;
-    }
+    },
+    authMode: 'session' | 'admin-panel' = 'session'
   ) {
-    const result = await this.request(`/video-codes/${taskId}`, {
-      method: 'POST',
-      body: JSON.stringify(data),
-    });
+    const result = await this.request(
+      `/video-codes/${taskId}`,
+      {
+        method: 'POST',
+        body: JSON.stringify(data),
+      },
+      authMode
+    );
     return result.data;
   }
 
-  async deleteVideoCode(taskId: string) {
-    const result = await this.request(`/video-codes/${taskId}`, { method: 'DELETE' });
+  async deleteVideoCode(taskId: string, authMode: 'session' | 'admin-panel' = 'session') {
+    const result = await this.request(`/video-codes/${taskId}`, { method: 'DELETE' }, authMode);
     return result.data;
   }
 
@@ -382,6 +437,107 @@ class ApiService {
 
   async getPaymentHistory() {
     return this.request('/payments/history');
+  }
+
+  async adminPanelLogin(username: string, password: string) {
+    const result = await this.request(
+      '/admin-panel/login',
+      {
+        method: 'POST',
+        body: JSON.stringify({ username, password }),
+      },
+      'none'
+    );
+    if (result.token) {
+      this.setAdminPanelToken(result.token);
+    }
+    return result;
+  }
+
+  async adminPanelMe() {
+    return this.request('/admin-panel/me', {}, 'admin-panel');
+  }
+
+  async adminPanelChangeCredentials(payload: {
+    currentPassword: string;
+    newUsername?: string;
+    newPassword?: string;
+  }) {
+    const result = await this.request(
+      '/admin-panel/credentials',
+      {
+        method: 'POST',
+        body: JSON.stringify(payload),
+      },
+      'admin-panel'
+    );
+    if (result.token) {
+      this.setAdminPanelToken(result.token);
+    }
+    return result;
+  }
+
+  async adminListCampaigns(): Promise<AdminCampaign[]> {
+    const result = await this.request('/admin/campaigns', {}, 'admin-panel');
+    return result.data;
+  }
+
+  async adminCreateCampaign(payload: {
+    title: string;
+    url?: string;
+    type?: CampaignType;
+    rewardPoints?: number;
+    description?: string;
+    status?: string;
+  }): Promise<AdminCampaign> {
+    const result = await this.request(
+      '/admin/campaigns',
+      { method: 'POST', body: JSON.stringify(payload) },
+      'admin-panel'
+    );
+    return result.data;
+  }
+
+  async adminUpdateCampaign(
+    id: string,
+    payload: Partial<{
+      title: string;
+      url: string;
+      type: CampaignType;
+      rewardPoints: number;
+      description: string;
+      status: string;
+    }>
+  ): Promise<AdminCampaign> {
+    const result = await this.request(
+      `/admin/campaigns/${id}`,
+      { method: 'PATCH', body: JSON.stringify(payload) },
+      'admin-panel'
+    );
+    return result.data;
+  }
+
+  async adminDeactivateCampaign(id: string): Promise<AdminCampaign> {
+    const result = await this.request(
+      `/admin/campaigns/${id}/deactivate`,
+      { method: 'POST' },
+      'admin-panel'
+    );
+    return result.data;
+  }
+
+  async adminDeleteCampaign(id: string): Promise<AdminCampaign> {
+    const result = await this.request(
+      `/admin/campaigns/${id}`,
+      { method: 'DELETE' },
+      'admin-panel'
+    );
+    return result.data;
+  }
+
+  async adminCampaignStats(id: string): Promise<AdminCampaignStats> {
+    const result = await this.request(`/admin/campaigns/${id}/stats`, {}, 'admin-panel');
+    return result.data;
   }
 }
 

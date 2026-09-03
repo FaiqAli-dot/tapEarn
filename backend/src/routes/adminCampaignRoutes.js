@@ -6,6 +6,7 @@ import {
   adminGetCampaign,
   adminCreateCampaign,
   adminUpdateCampaign,
+  adminDeactivateCampaign,
   adminDeleteCampaign,
   adminCampaignStats
 } from '../controllers/adminCampaignController.js';
@@ -20,6 +21,7 @@ router.post('/', adminCreateCampaign);
 router.get('/:id/stats', adminCampaignStats);
 router.get('/:id', adminGetCampaign);
 router.patch('/:id', adminUpdateCampaign);
+router.post('/:id/deactivate', adminDeactivateCampaign);
 router.delete('/:id', adminDeleteCampaign);
 
 export default router;

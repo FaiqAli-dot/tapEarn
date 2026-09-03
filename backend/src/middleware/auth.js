@@ -1,4 +1,5 @@
 import jwt from 'jsonwebtoken';
+import { isAdminPanelToken } from '../constants/adminPanel.js';
 
 function getJwtSecret() {
   const secret = process.env.JWT_SECRET;
@@ -22,7 +23,8 @@ export function verifySessionToken(token) {
 
 /**
  * Require a valid session JWT.
- * Sets req.telegramId and req.auth from the token — never from client-supplied userId.
+ * Accepts Telegram Mini App sessions (telegramId) or admin-panel JWTs.
+ * Sets req.telegramId / req.auth / req.isAdminPanel as appropriate.
  */
 export function requireAuth(req, res, next) {
   try {
@@ -39,6 +41,14 @@ export function requireAuth(req, res, next) {
     }
 
     const decoded = verifySessionToken(token);
+
+    if (isAdminPanelToken(decoded)) {
+      req.auth = decoded;
+      req.isAdminPanel = true;
+      req.panelUserId = String(decoded.panelUserId);
+      return next();
+    }
+
     if (!decoded?.telegramId) {
       return res.status(401).json({
         success: false,
@@ -48,6 +58,7 @@ export function requireAuth(req, res, next) {
 
     req.telegramId = String(decoded.telegramId);
     req.auth = decoded;
+    req.isAdminPanel = false;
     next();
   } catch (error) {
     return res.status(401).json({
