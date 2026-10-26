@@ -1,3 +1,4 @@
+import { Address } from 'ton-core';
 import {
   assertTestnetOnly,
   getTestnetRpcBase,
@@ -51,9 +52,12 @@ function normalizeAddress(addr) {
 function addressesMatch(a, b) {
   if (!a || !b) return false;
   if (a === b) return true;
-  // Compare raw forms when both parseable — soft match on suffix (workchain+hash hex)
-  const strip = (x) => String(x).replace(/^EQ|^UQ|^0Q|^kQ/, '');
-  return strip(a) === strip(b);
+  try {
+    return Address.parse(String(a)).toRawString() === Address.parse(String(b)).toRawString();
+  } catch {
+    const strip = (x) => String(x).replace(/^(EQ|UQ|0Q|kQ)/, '');
+    return strip(a) === strip(b);
+  }
 }
 
 function txHashOf(tx) {

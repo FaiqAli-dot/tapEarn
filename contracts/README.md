@@ -60,8 +60,17 @@ Never set `TON_NETWORK=mainnet`. Never commit `.secrets/`.
 | Sandbox router | `npm test` |
 | Backend + scenarios A–G (mock chain) | `cd ../backend && npm test` |
 
+## Live V3 deploy (2026-10-26)
+
+| Item | Value |
+| --- | --- |
+| Contract | `0QB0YFU64VFWC5H7cgvVUSxmuS8FOB5JGPEYpzZBhRUUZEj4` |
+| Code hash | `e319b075bcc380405aee1a06854561e34f2510d79624e47f935d142bb7c27ec7` |
+| Deploy tx | `bEz3Dv0V85q/SKbkcF46B42N1jn2IYF5ehOf6H4omtc=` |
+| Explorer | https://testnet.tonscan.org/address/0QB0YFU64VFWC5H7cgvVUSxmuS8FOB5JGPEYpzZBhRUUZEj4 |
+
 ## Prior V2 deploy (superseded by V3 auth shape)
 
-V2 contracts that omit the `commission` field are incompatible with V3 payloads. Redeploy V3 for new payments.
+V2 contracts that omit the `commission` field are incompatible with V3 payloads.
 
 Legacy V2 address (do not use for V3 payments): `0QDb2mg_3L8FMmA-wiX5c8Eec9PDz8OZVufWZMmdI7xUgJ3w`

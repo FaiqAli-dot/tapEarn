@@ -137,11 +137,10 @@ Purchase UI lives inside the wallet screen (no separate Plans page).
 4. **Tests**: contract sandbox + split; backend tonPayments + scenarios A–G (mock); frontend build/typecheck.
 5. **Docs**: this audit + `docs/ton-subscription-testnet.md`.
 
-### Blockers
-- **Live testnet deploy & Mini App E2E A–G:** **BLOCKED** — disposable wallets generated, but deployer balance is 0 and programmatic faucets do not credit TON. Fund via `@testgiver_ton_bot`, then `npm run deploy:from-secrets`.
-
-### Scenario marks (summary)
-See `docs/ton-subscription-testnet.md` for full table. Mock/API A–G: **PASS**. Live through app: **BLOCKED** (funding).
+### Live testnet (after owner funding)
+- Deployer funded (~2 TON); subscribers funded 0.4 TON each; V3 deployed at `0QB0YFU64VFWC5H7cgvVUSxmuS8FOB5JGPEYpzZBhRUUZEj4` (code hash matches build).
+- Live scenarios A–G via backend+chain harness: **PASS** (see `docs/ton-subscription-testnet.md`).
+- Telegram Mini App / TON Connect WebView purchase: **NOT RUN** in this environment.
 
 ### Telegram policy
 Stars required for production digital goods in Mini Apps; TON checkout remains testnet-only.

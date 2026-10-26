@@ -422,8 +422,18 @@ export async function confirmTonPayment(paymentId, telegramId, options = {}) {
       knownTxHash: looksLikeBocNotHash(payment.inboundTxHash) ? null : payment.inboundTxHash
     });
     if (inboundMeta.found && inboundMeta.txHash) {
-      payment.inboundTxHash = inboundMeta.txHash;
-      await payment.save();
+      // Never bind an inbound hash already claimed by another payment (prevents false confirm)
+      const claimed = await Payment.findOne({
+        _id: { $ne: payment._id },
+        inboundTxHash: inboundMeta.txHash,
+        status: { $in: ['SUBMITTED', 'PROCESSING', 'PARTIALLY_SETTLED', 'CONFIRMED'] }
+      });
+      if (claimed) {
+        inboundMeta = { found: false, reason: 'inbound_tx_already_claimed' };
+      } else {
+        payment.inboundTxHash = inboundMeta.txHash;
+        await payment.save();
+      }
     }
   }
 
