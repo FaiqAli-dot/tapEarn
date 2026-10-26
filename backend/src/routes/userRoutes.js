@@ -14,7 +14,8 @@ import {
   syncTaps,
   getEngagement,
   completeQuest,
-  claimQuestBonus
+  claimQuestBonus,
+  getPointHistoryForUser
 } from '../controllers/userController.js';
 import { requireAuth } from '../middleware/auth.js';
 import { tapRateLimiter } from '../middleware/rateLimiter.js';
@@ -177,6 +178,16 @@ router.post('/reset-daily-tasks', async (req, res) => {
     res.json({ success: true, ...result });
   } catch (error) {
     res.status(400).json({ success: false, error: error.message });
+  }
+});
+
+router.get('/point-history', async (req, res) => {
+  try {
+    const limit = Math.min(parseInt(req.query.limit, 10) || 50, 100);
+    const data = await getPointHistoryForUser(req.telegramId, limit);
+    res.json({ success: true, data });
+  } catch (error) {
+    res.status(500).json({ success: false, error: 'Failed to fetch point history' });
   }
 });
 

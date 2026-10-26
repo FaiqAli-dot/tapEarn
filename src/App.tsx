@@ -152,7 +152,7 @@ function MiniAppShell() {
       <div className="tg-app flex items-center justify-center">
         <div className="text-center">
           <div className="animate-spin rounded-full h-16 w-16 border-b-2 border-blue-500 mx-auto mb-4"></div>
-          <p className="text-gray-600">Loading TapEarn...</p>
+          <p className="text-gray-600">Loading YORZA...</p>
         </div>
       </div>
     )
@@ -165,7 +165,7 @@ function MiniAppShell() {
           <h1 className="text-xl font-bold text-gray-800 mb-2">Sign-in required</h1>
           <p className="text-gray-600 mb-4">{authError}</p>
           <p className="text-sm text-gray-500 mb-4">
-            Open TapEarn from @YORZAEARNBOT, or configure local DEV auth.
+            Open YORZA from @YORZAEARNBOT, or configure local DEV auth.
           </p>
           <Link to="/home" className="text-sm text-blue-600 hover:underline">
             Visit the public YORZA home page

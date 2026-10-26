@@ -260,6 +260,25 @@ describe('Leaderboards', () => {
   });
 });
 
+describe('Point history', () => {
+  it('returns auditable earning transactions for the user', async () => {
+    await createUser('850', { energy: 100, maxEnergy: 100, tapPower: 2 });
+
+    await request(app)
+      .post('/api/users/tap')
+      .set(authHeader('850'));
+
+    const res = await request(app)
+      .get('/api/users/point-history')
+      .set(authHeader('850'));
+
+    assert.equal(res.status, 200);
+    assert.equal(res.body.data.length, 1);
+    assert.equal(res.body.data[0].type, 'CLICK');
+    assert.equal(res.body.data[0].amount, 2);
+  });
+});
+
 describe('Admin authorization', () => {
   it('returns 403 for non-admin on admin campaigns', async () => {
     await createUser('900');

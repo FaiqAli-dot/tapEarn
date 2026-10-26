@@ -1,8 +1,9 @@
-import React, { useState } from 'react'
+import React, { useState, useEffect } from 'react'
 import { Link } from 'react-router-dom'
 import { motion } from 'framer-motion'
 import { useTelegram } from '../hooks/useTelegram'
-import { GameState } from '../types/game'
+import { GameState, PointHistoryEntry } from '../types/game'
+import { apiService } from '../services/api'
 import {
   User,
   Trophy,
@@ -14,6 +15,8 @@ import {
   Copy,
   Check,
   ChevronRight,
+  Wallet,
+  History,
 } from 'lucide-react'
 
 interface ProfileScreenProps {
@@ -23,6 +26,29 @@ interface ProfileScreenProps {
 const ProfileScreen: React.FC<ProfileScreenProps> = ({ gameState }) => {
   const { user, hapticFeedback } = useTelegram()
   const [copied, setCopied] = useState(false)
+  const [pointHistory, setPointHistory] = useState<PointHistoryEntry[]>([])
+  const [historyLoading, setHistoryLoading] = useState(true)
+
+  useEffect(() => {
+    let cancelled = false
+    apiService
+      .getPointHistory(30)
+      .then((entries) => {
+        if (!cancelled) setPointHistory(entries)
+      })
+      .catch((error) => {
+        console.error('Failed to load point history:', error)
+      })
+      .finally(() => {
+        if (!cancelled) setHistoryLoading(false)
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [])
+
+  const formatPointType = (type: string) =>
+    type.replace(/_/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase())
 
   const copyReferralCode = async () => {
     try {
@@ -98,6 +124,28 @@ const ProfileScreen: React.FC<ProfileScreenProps> = ({ gameState }) => {
       </div>
 
       <Link
+        to="/connect-wallet"
+        className="tg-card p-4 mb-4 flex items-center justify-between hover:bg-gray-50 transition-colors"
+      >
+        <div className="flex items-center space-x-3">
+          <div className="w-10 h-10 bg-indigo-100 rounded-full flex items-center justify-center">
+            <Wallet className="w-5 h-5 text-indigo-600" />
+          </div>
+          <div>
+            <h3 className="font-semibold text-gray-800">TON Wallet</h3>
+            <p className="text-sm text-gray-600">
+              {gameState.walletVerified
+                ? 'Verified — subscription ready'
+                : gameState.walletConnected
+                  ? 'Connected — verify for payouts'
+                  : 'Connect for subscriptions'}
+            </p>
+          </div>
+        </div>
+        <ChevronRight className="w-5 h-5 text-gray-400" />
+      </Link>
+
+      <Link
         to="/leaderboard"
         className="tg-card p-4 mb-6 flex items-center justify-between hover:bg-gray-50 transition-colors"
       >
@@ -161,6 +209,35 @@ const ProfileScreen: React.FC<ProfileScreenProps> = ({ gameState }) => {
             </motion.div>
           )
         })}
+      </div>
+
+      <div className="tg-card p-4 mb-6">
+        <h3 className="text-lg font-semibold text-gray-800 mb-4 flex items-center">
+          <History className="w-5 h-5 mr-2 text-blue-600" />
+          Earning History
+        </h3>
+        {historyLoading ? (
+          <p className="text-sm text-gray-500">Loading recent earnings...</p>
+        ) : pointHistory.length === 0 ? (
+          <p className="text-sm text-gray-500">No earnings yet — tap, complete quests, or invite friends.</p>
+        ) : (
+          <div className="space-y-3">
+            {pointHistory.map((entry) => (
+              <div
+                key={entry.id}
+                className="flex items-center justify-between p-3 bg-gray-50 rounded-lg"
+              >
+                <div>
+                  <p className="font-medium text-gray-800">{formatPointType(entry.type)}</p>
+                  <p className="text-xs text-gray-500">
+                    {entry.description || new Date(entry.createdAt).toLocaleString()}
+                  </p>
+                </div>
+                <span className="font-bold text-green-600">+{entry.amount.toLocaleString()}</span>
+              </div>
+            ))}
+          </div>
+        )}
       </div>
 
       <div className="tg-card p-4">

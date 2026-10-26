@@ -5,6 +5,7 @@ import type {
   LeaderboardEntry,
   LeaderboardMyRank,
   LeaderboardType,
+  PointHistoryEntry,
 } from '../types/game';
 
 const SESSION_TOKEN_KEY = 'tapearn_session_token';
@@ -437,6 +438,13 @@ class ApiService {
 
   async getPaymentHistory() {
     return this.request('/payments/history');
+  }
+
+  async getPointHistory(limit = 50): Promise<PointHistoryEntry[]> {
+    const result = await this.request(
+      `/users/point-history?limit=${encodeURIComponent(String(limit))}`
+    );
+    return result.data;
   }
 
   async adminPanelLogin(username: string, password: string) {
