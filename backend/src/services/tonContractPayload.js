@@ -19,8 +19,9 @@ export function paymentIdToUint256(objectId) {
  * but still requires a valid address in the signed cell — use treasury.
  */
 export function resolveAuthReferrerWallet(payment) {
-  const commission = BigInt(payment.referrerShareNanoton || payment.commissionNanoton || '0');
-  if (commission > 0n && payment.referrerWallet) {
+  const estimatedShare = BigInt(payment.referrerShareNanoton || payment.commissionNanoton || '0');
+  const authFlag = BigInt(payment.commissionAuthNanoton || (estimatedShare > 0n ? 1n : 0n));
+  if (authFlag > 0n && payment.referrerWallet) {
     return payment.referrerWallet;
   }
   return payment.treasuryWallet || getTreasuryAddress();
@@ -94,7 +95,15 @@ export function buildSignedSubscribePayload(payment) {
   const paymentIdUint256 = paymentIdToUint256(payment._id);
   const expiryUnix = Math.floor(new Date(payment.expiresAt).getTime() / 1000);
   const nonce = BigInt(payment.authorizationNonce);
-  const commissionNanoton = payment.referrerShareNanoton || payment.commissionNanoton || '0';
+  // On-chain v3.1: commission > 0 is eligibility only; payout is 50/50 of actual net.
+  // Sign 1 (not the estimated half) so high fee estimates cannot break under old fixed-amount checks after upgrade.
+  const estimatedShare = BigInt(payment.referrerShareNanoton || payment.commissionNanoton || '0');
+  const commissionNanoton =
+    payment.commissionAuthNanoton != null
+      ? String(payment.commissionAuthNanoton)
+      : estimatedShare > 0n
+        ? '1'
+        : '0';
   const referrerWallet = resolveAuthReferrerWallet(payment);
 
   const authCell = buildAuthCell({

@@ -77,15 +77,7 @@ function buildSubscribeBody({
     .endCell();
 }
 
-/** Approximate 50% commission after fees for sandbox (actual fwd fees from chain config). */
-function approxHalfCommission(gross) {
-  const exec = 7_500_000n;
-  const fwdEstimate = 10_000_000n; // generous upper bound for two msgs in sandbox
-  const dist = gross - exec - fwdEstimate;
-  return dist > 0n ? dist / 2n : 0n;
-}
-
-describe('ReferralPayment V3 router (sandbox)', () => {
+describe('ReferralPayment V3.1 router (sandbox)', () => {
   let code;
   let blockchain;
   let treasury;
@@ -132,14 +124,14 @@ describe('ReferralPayment V3 router (sandbox)', () => {
     assert.ok(deployed, 'ReferralPayment router should deploy in sandbox');
   });
 
-  it('first payment: routes signed commission to referrer and remainder to treasury', async () => {
+  it('first payment: 50/50 of net after fees (signed commission is eligibility only)', async () => {
     const gross = toNano('0.1');
     const paymentId = BigInt('0x' + crypto.randomBytes(32).toString('hex'));
     const expiry = BigInt(Math.floor(Date.now() / 1000) + 3600);
     const nonce = 1n;
 
-    // Use a small fixed commission that fits after real sandbox fees
-    const commission = 20_000_000n;
+    // Any commission > 0 means eligible; on-chain ignores the absolute value for payout math
+    const commission = 1n;
 
     const body = buildSubscribeBody({
       paymentId,
@@ -184,8 +176,55 @@ describe('ReferralPayment V3 router (sandbox)', () => {
 
     const refPayout = payoutTxs.find((tx) => addrKey(tx.inMessage?.info?.dest) === referrerKey);
     const trePayout = payoutTxs.find((tx) => addrKey(tx.inMessage?.info?.dest) === treasuryKey);
-    assert.equal(refPayout.inMessage.info.value.coins, commission);
-    assert.ok(trePayout.inMessage.info.value.coins > 0n);
+    const refValue = refPayout.inMessage.info.value.coins;
+    const treValue = trePayout.inMessage.info.value.coins;
+    // 50/50 of net: treasury gets floor remainder (equal or +1 nano)
+    assert.ok(refValue > 0n);
+    assert.ok(treValue >= refValue);
+    assert.ok(treValue - refValue <= 1n, 'shares must differ by at most 1 nanoton');
+    // Gross is not split 50/50 — fees/reserve come out first
+    assert.ok(refValue + treValue < gross);
+  });
+
+  it('eligible with large signed commission still pays 50/50 of net (not the signed amount)', async () => {
+    const gross = toNano('0.1');
+    const paymentId = BigInt('0x' + crypto.randomBytes(32).toString('hex'));
+    const body = buildSubscribeBody({
+      paymentId,
+      subscriber: subscriber.address,
+      referrer: referrer.address,
+      amount: gross,
+      commission: 90_000_000n, // deliberately not a valid fixed payout under old semantics
+      expiry: BigInt(Math.floor(Date.now() / 1000) + 3600),
+      nonce: 11n,
+      signerSeed
+    });
+
+    const result = await subscriber.send({
+      to: contract.address,
+      value: gross,
+      body,
+      bounce: true
+    });
+
+    const contractKey = addrKey(contract.address);
+    const referrerKey = addrKey(referrer.address);
+    const contractTx = result.transactions.find(
+      (tx) =>
+        addrKey(tx.inMessage?.info?.dest) === contractKey &&
+        tx.description?.computePhase?.success &&
+        tx.outMessagesCount >= 2
+    );
+    assert.ok(contractTx, 'should succeed: commission is eligibility, not fixed amount');
+
+    const refPayout = result.transactions.find(
+      (tx) =>
+        addrKey(tx.inMessage?.info?.src) === contractKey &&
+        addrKey(tx.inMessage?.info?.dest) === referrerKey
+    );
+    assert.ok(refPayout);
+    assert.ok(refPayout.inMessage.info.value.coins < 90_000_000n);
+    assert.ok(refPayout.inMessage.info.value.coins !== 90_000_000n);
   });
 
   it('renewal / zero commission: full distributable to treasury only', async () => {
@@ -282,7 +321,7 @@ describe('ReferralPayment V3 router (sandbox)', () => {
     assert.ok(bounced);
   });
 
-  it('rejects commission greater than distributable', async () => {
+  it('rejects unauthorized payer (sender ≠ subscriber)', async () => {
     const gross = toNano('0.1');
     const paymentId = BigInt('0x' + crypto.randomBytes(32).toString('hex'));
     const body = buildSubscribeBody({
@@ -290,15 +329,40 @@ describe('ReferralPayment V3 router (sandbox)', () => {
       subscriber: subscriber.address,
       referrer: referrer.address,
       amount: gross,
-      commission: gross,
+      commission: 1n,
       expiry: BigInt(Math.floor(Date.now() / 1000) + 3600),
       nonce: 4n,
       signerSeed
     });
 
-    const result = await subscriber.send({
+    // Referrer wallet sends, but auth names subscriber → unauthorized
+    const result = await referrer.send({
       to: contract.address,
       value: gross,
+      body,
+      bounce: true
+    });
+    const bounced = result.transactions.some((tx) => tx.description?.aborted);
+    assert.ok(bounced);
+  });
+
+  it('rejects amount that cannot cover reserve + forward fees', async () => {
+    const tiny = 1_000_000n; // below EXEC_RESERVE (7.5M)
+    const paymentId = BigInt('0x' + crypto.randomBytes(32).toString('hex'));
+    const body = buildSubscribeBody({
+      paymentId,
+      subscriber: subscriber.address,
+      referrer: referrer.address,
+      amount: tiny,
+      commission: 1n,
+      expiry: BigInt(Math.floor(Date.now() / 1000) + 3600),
+      nonce: 5n,
+      signerSeed
+    });
+
+    const result = await subscriber.send({
+      to: contract.address,
+      value: tiny,
       body,
       bounce: true
     });

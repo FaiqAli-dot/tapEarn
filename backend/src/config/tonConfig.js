@@ -15,8 +15,14 @@ export const PAYMENT_STATUSES = [
   'EXPIRED'
 ];
 
-export const FEE_POLICY_VERSION = 'v3-router';
-export const SPLIT_VERSION = 'v3-first-commission';
+/**
+ * v3.1-net-50-50:
+ * On-chain distributable = amount - RAWRESERVE(exec) - GETFORWARDFEE×N
+ * commission>0 → 50/50 of that net (eligibility flag); commission==0 → all to treasury.
+ * Off-chain computePaymentSplit values are ESTIMATES only (reserve ≠ actual gas).
+ */
+export const FEE_POLICY_VERSION = 'v3.1-net-50-50';
+export const SPLIT_VERSION = 'v3.1-net-50-50';
 
 /** Default subscription gross amount in TON (testnet). Override via TON_SUBSCRIPTION_AMOUNT. */
 export const DEFAULT_SUBSCRIPTION_TON = 0.1;
@@ -28,12 +34,13 @@ export const DEFAULT_SUBSCRIPTION_DAYS = 30;
 export const OUT_MSG_BITS = 6 + 267 + 124 + 1 + 4 + 4 + 64 + 32 + 1 + 1;
 export const OUT_MSG_CELLS = 1;
 
-/** Mirrors contract EXEC_BASE_GAS + EXEC_DICT_OP. */
+/** Mirrors contract EXEC_BASE_GAS + EXEC_DICT_OP (RAWRESERVE lock — not realized gas). */
 export const EXEC_RESERVE_NANOTON = BigInt(4_000_000 + 3_500_000);
 
 /**
- * Testnet forward-fee lump from config param 25 (approx; contract uses GETFORWARDFEE on-chain).
- * Override via TON_TESTNET_FWD_FEE_NANOTON for integration tests.
+ * Conservative off-chain estimate of one forward fee (contract uses GETFORWARDFEE on-chain).
+ * Override via TON_TESTNET_FWD_FEE_NANOTON for quotes/tests only.
+ * Scenario A measured ~44k–107k per msg; default stays conservative for UI estimates.
  */
 export function getEstimatedForwardFeeNanoton() {
   const override = process.env.TON_TESTNET_FWD_FEE_NANOTON;
@@ -98,19 +105,22 @@ export function assertTestnetOnly(network) {
 }
 
 /**
- * Estimate split using same formula as on-chain V3 router.
+ * ESTIMATE only — mirrors on-chain fee-aware net formula with configurable fwd-fee guess.
+ * On-chain truth: RAWRESERVE(exec) + GETFORWARDFEE×N, then 50/50 of remainder when eligible.
+ *
+ * Rounding: referrer = floor(net/2), treasury = net - referrer (odd nano → treasury).
+ * Unused RAWRESERVE stays on the contract (not discarded; recoverable via sweep_excess).
  *
  * @param {bigint|string|number} grossNanoton
- * @param {{ commissionEligible?: boolean }} [options]
- *   commissionEligible true → 50% of distributable to referrer (first payment only).
- *   false → commission 0, full distributable to treasury (1 outbound msg → 1 fwd fee).
- *
- * Odd nanotons: when splitting 50/50, referrer = floor(distributable/2), treasury gets remainder.
+ * @param {{ commissionEligible?: boolean, forwardFeePerMessageNanoton?: bigint }} [options]
  */
 export function computePaymentSplit(grossNanoton, options = {}) {
   const commissionEligible = Boolean(options.commissionEligible);
   const gross = BigInt(grossNanoton);
-  const fwdFee = getEstimatedForwardFeeNanoton();
+  const fwdFee =
+    options.forwardFeePerMessageNanoton != null
+      ? BigInt(options.forwardFeePerMessageNanoton)
+      : getEstimatedForwardFeeNanoton();
   const outCount = commissionEligible ? 2n : 1n;
   const outgoingFees = fwdFee * outCount;
   const executionReserve = EXEC_RESERVE_NANOTON;
@@ -125,7 +135,6 @@ export function computePaymentSplit(grossNanoton, options = {}) {
   let referrerShare = 0n;
   let treasuryShare = distributable;
   if (commissionEligible) {
-    // floor division; odd nanoton remainder → treasury
     referrerShare = distributable / 2n;
     treasuryShare = distributable - referrerShare;
   }
@@ -142,6 +151,40 @@ export function computePaymentSplit(grossNanoton, options = {}) {
     referrerShareNanoton: referrerShare,
     treasuryShareNanoton: treasuryShare,
     commissionNanoton: referrerShare,
-    commissionEligible
+    commissionEligible,
+    /** Signed on-chain eligibility value (>0 when eligible). Payout amounts come from actual net. */
+    commissionAuthNanoton: commissionEligible ? 1n : 0n,
+    isEstimate: true,
+    feePolicyNote:
+      'Estimates only. On-chain: RAWRESERVE(exec) + GETFORWARDFEE×N, then 50/50 of net if eligible. Unused reserve stays on contract.'
+  };
+}
+
+/**
+ * From observed outbound legs, derive actual net and whether 50/50 holds.
+ * Treasury may be referrerShare or referrerShare+1 (odd nano rule).
+ */
+export function reconcileNetSplit({ referrerValueNanoton, treasuryValueNanoton, commissionEligible }) {
+  const ref = BigInt(referrerValueNanoton || 0);
+  const tre = BigInt(treasuryValueNanoton || 0);
+  if (!commissionEligible) {
+    return {
+      ok: ref === 0n && tre > 0n,
+      netNanoton: tre,
+      referrerShareNanoton: 0n,
+      treasuryShareNanoton: tre,
+      balanced50_50: false
+    };
+  }
+  const net = ref + tre;
+  const expectedRef = net / 2n;
+  const expectedTre = net - expectedRef;
+  const balanced50_50 = ref === expectedRef && tre === expectedTre;
+  return {
+    ok: balanced50_50 && ref > 0n,
+    netNanoton: net,
+    referrerShareNanoton: ref,
+    treasuryShareNanoton: tre,
+    balanced50_50
   };
 }

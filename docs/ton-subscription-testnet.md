@@ -1,13 +1,25 @@
 # YORZA TON Subscription — Testnet Setup, Scenarios, Results
 
 **Network:** TON **testnet only**  
-**Updated:** 2026-10-26 (post-funding live run)  
+**Updated:** 2026-10-26 (fee-aware V3.1 code on branch; **not redeployed**)  
 **Branch:** `cursor/ton-subscription-e2e-8f7c`  
 **PR:** https://github.com/FaiqAli-dot/tapEarn/pull/15
 
 ---
 
-## Deployed V3 contract
+## V3.1 fee-aware status (awaiting owner deploy approval)
+
+| Item | Status |
+| --- | --- |
+| Fee audit of scenario A gap | Done — `docs/ton-subscription-fee-audit.md` |
+| On-chain 50/50 **of net** (eligibility flag, not fixed commission) | Implemented in `contracts/ReferralPayment.fc` (V3.1) |
+| Backend quotes/confirm reconcile to observed 50/50 net | Implemented (`FEE_POLICY_VERSION=v3.1-net-50-50`) |
+| New testnet deploy | **NOT DONE** — keep live V3 contract + A–G evidence until owner approves |
+| Live V3 contract still authoritative on-chain | `0QB0YFU64VFWC5H7cgvVUSxmuS8FOB5JGPEYpzZBhRUUZEj4` |
+
+---
+
+## Deployed V3 contract (live evidence — do not replace without approval)
 
 | Item | Value |
 | --- | --- |

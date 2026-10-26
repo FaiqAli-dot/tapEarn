@@ -1,10 +1,14 @@
-;; YORZA V3 — Non-Custodial TON Subscription Payment Router (testnet)
+;; YORZA V3.1 — Non-Custodial TON Subscription Payment Router (testnet)
 ;; Validates backend-signed authorization, reserves fees, routes funds, prevents replay.
-;; Commission is bound in the signed auth:
-;;   commission > 0 → referrer gets commission, treasury gets remainder
+;; Fee-aware net split (exact gas is NOT known in advance):
+;;   1) RAWRESERVE(EXEC) — lock execution budget (unused remains on contract; sweep_excess can recover)
+;;   2) outgoing_fees = GETFORWARDFEE × outbound_count  (known at runtime)
+;;   3) distributable = amount - EXEC - outgoing_fees
+;; Signed `commission` is an eligibility flag, NOT a fixed payout amount:
+;;   commission > 0 → referrer = distributable/2, treasury = remainder (50/50 of NET; odd nano → treasury)
 ;;   commission == 0 → full distributable to treasury (renewals / no referrer)
 ;; Bounce / stuck balance: signer-authorized sweep_excess → treasury (never assume dual send = settled).
-;; NO admin pause / treasury mutation. MAINNET NOT DEPLOYED.
+;; NO admin pause / treasury mutation. MAINNET NOT DEPLOYED without owner approval.
 
 #include "imports/stdlib.fc";
 
@@ -89,7 +93,8 @@ global cell processed_dict;
 
         throw_unless(error::expired, expiry > now());
 
-        (slice unused_sw, int already) = idict_get?(processed_dict, 256, sweep_id);
+        ;; udict: payment/sweep ids are uint256 (idict rejects keys with high bit set)
+        (slice unused_sw, int already) = udict_get?(processed_dict, 256, sweep_id);
         throw_if(error::replay, already);
 
         cell auth_cell = begin_cell()
@@ -107,7 +112,7 @@ global cell processed_dict;
         int sendable = my_balance - execution_reserve - min_leave - fwd_fee;
         throw_unless(error::nothing_to_sweep, sendable > 0);
 
-        processed_dict~idict_set(256, sweep_id, begin_cell().store_uint(1, 1).end_cell().begin_parse());
+        processed_dict~udict_set(256, sweep_id, begin_cell().store_uint(1, 1).end_cell().begin_parse());
         save_data();
         send_empty_bounceable(treasury_addr, sendable);
         return ();
@@ -135,7 +140,7 @@ global cell processed_dict;
     throw_unless(error::unauthorized, equal_slice_bits(sender, subscriber));
     throw_unless(error::insufficient, msg_value == amount);
 
-    (slice unused, int already_paid) = idict_get?(processed_dict, 256, payment_id);
+    (slice unused, int already_paid) = udict_get?(processed_dict, 256, payment_id);
     throw_if(error::replay, already_paid);
 
     cell auth_cell = begin_cell()
@@ -149,11 +154,14 @@ global cell processed_dict;
         .end_cell();
     throw_unless(error::bad_signature, check_signature(cell_hash(auth_cell), signature, signer_pubkey));
 
+    ;; commission > 0 ⇒ first-eligible referred payment (50/50 of net).
+    ;; Absolute commission value is NOT used as the payout (fees cannot be known exactly off-chain).
     int out_count = 1;
     if (commission > 0) {
         out_count = 2;
     }
     int execution_reserve = EXEC_BASE_GAS + EXEC_DICT_OP;
+    ;; Reserve is a lock, not realized gas. Unused nanotons stay on the contract (sweep_excess).
     raw_reserve(execution_reserve, 0);
 
     int fwd_fee_one = get_fwd_fee(OUT_MSG_CELLS, OUT_MSG_BITS, 0);
@@ -161,16 +169,19 @@ global cell processed_dict;
 
     int distributable = amount - execution_reserve - outgoing_fees;
     throw_if(error::insufficient, distributable <= 0);
-    throw_unless(error::bad_commission, (commission >= 0) & (commission <= distributable));
+    ;; Reject negative encodings; payout ignores absolute commission when > 0 (eligibility only).
+    throw_unless(error::bad_commission, commission >= 0);
 
     ;; Mark processed BEFORE sends in the same transaction (atomic with compute success).
     ;; A later bounce does NOT clear this id — backend must treat PARTIALLY_SETTLED and sweep excess.
-    processed_dict~idict_set(256, payment_id, begin_cell().store_uint(1, 1).end_cell().begin_parse());
+    processed_dict~udict_set(256, payment_id, begin_cell().store_uint(1, 1).end_cell().begin_parse());
     save_data();
 
     if (commission > 0) {
-        int tre_share = distributable - commission;
-        send_empty_bounceable(referrer, commission);
+        ;; 50/50 of NET after reserve + actual forward-fee budget; odd nanoton → treasury
+        int ref_share = distributable / 2;
+        int tre_share = distributable - ref_share;
+        send_empty_bounceable(referrer, ref_share);
         send_empty_bounceable(treasury_addr, tre_share);
     } else {
         send_empty_bounceable(treasury_addr, distributable);
@@ -179,7 +190,7 @@ global cell processed_dict;
 
 int get_payment_processed(int payment_id) method_id {
     load_data();
-    (slice val, int found) = idict_get?(processed_dict, 256, payment_id);
+    (slice val, int found) = udict_get?(processed_dict, 256, payment_id);
     return found;
 }
 

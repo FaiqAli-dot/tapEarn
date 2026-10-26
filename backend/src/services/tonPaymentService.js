@@ -11,7 +11,8 @@ import {
   getContractAddress,
   getSubscriptionAmountNanoton,
   getSubscriptionDurationMs,
-  getTreasuryAddress
+  getTreasuryAddress,
+  reconcileNetSplit
 } from '../config/tonConfig.js';
 import { buildAuthorizationPayload, isSignerConfigured } from '../services/tonAuthSigner.js';
 import {
@@ -47,6 +48,7 @@ function serializePayment(payment, extras = {}) {
     netAmountNanoton: payment.netAmountNanoton,
     referrerShareNanoton: payment.referrerShareNanoton,
     treasuryShareNanoton: payment.treasuryShareNanoton,
+    commissionAuthNanoton: payment.commissionAuthNanoton || '0',
     commissionNanoton: payment.referrerShareNanoton || '0',
     subscriberWallet: payment.subscriberWallet,
     referrerWallet: payment.referrerWallet,
@@ -84,9 +86,9 @@ function serializePayment(payment, extras = {}) {
 
 function economicRuleFor(commissionEligible) {
   if (commissionEligible) {
-    return 'First successful payment only: after fees, 50% of distributable goes to the verified referrer and 50% to treasury (odd nanotons → treasury).';
+    return 'First eligible payment only: on-chain net = amount − RAWRESERVE(exec) − GETFORWARDFEE×2, then 50/50 of that net (odd nano → treasury). Quotes are estimates — reserve ≠ actual gas.';
   }
-  return 'Renewal or no eligible referrer: after fees, 100% of distributable goes to treasury. Commission is not paid again.';
+  return 'Renewal or no eligible referrer: on-chain net after reserve + forward fee goes 100% to treasury. Commission is not paid again.';
 }
 
 /**
@@ -219,6 +221,8 @@ export async function createTonSubscriptionIntent(telegramId) {
     referrerRewardGranted: false
   });
 
+  // Eligibility flag for signed auth (v3.1); estimated shares stay on the payment for quotes only.
+  payment.commissionAuthNanoton = commissionEligible ? '1' : '0';
   payment.paymentIdUint256 = paymentIdToUint256(payment._id).toString();
 
   if (commissionEligible) {
@@ -231,6 +235,7 @@ export async function createTonSubscriptionIntent(telegramId) {
       payment.netAmountNanoton = renewalSplit.netAmountNanoton.toString();
       payment.referrerShareNanoton = '0';
       payment.treasuryShareNanoton = renewalSplit.treasuryShareNanoton.toString();
+      payment.commissionAuthNanoton = '0';
       payment.referrerWallet = null;
       payment.isFirstPayment = false;
       payment.settlementNotes = 'Concurrent first-commission lock held by another intent; treating as treasury-only';
@@ -481,19 +486,54 @@ export async function confirmTonPayment(paymentId, telegramId, options = {}) {
   let treasuryVerified = false;
 
   if (outMsgs.length > 0) {
+    // Fee-aware: match legs with min 1 nano, then require 50/50 of observed net (not estimated shares).
     const legs = inspectPayoutLegs({
       outMsgs,
       referrerWallet: payment.referrerWallet,
       treasuryWallet: payment.treasuryWallet,
-      referrerShareNanoton: payment.referrerShareNanoton,
-      treasuryShareNanoton: payment.treasuryShareNanoton
+      referrerShareNanoton: needsCommission ? '1' : '0',
+      treasuryShareNanoton: '1'
     });
-    if (needsCommission) {
-      referrerVerified = Boolean(legs.referrer);
-    }
-    treasuryVerified = Boolean(legs.treasury);
     if (legs.bouncedCount > 0) {
       payment.settlementNotes = `Detected ${legs.bouncedCount} bounced out_msg(s); funds may be locked in contract pending sweep_excess`;
+    }
+    if (needsCommission) {
+      const reconciled = reconcileNetSplit({
+        referrerValueNanoton: legs.referrer?.valueNanoton || 0,
+        treasuryValueNanoton: legs.treasury?.valueNanoton || 0,
+        commissionEligible: true
+      });
+      referrerVerified = reconciled.ok;
+      treasuryVerified = reconciled.ok;
+      if (reconciled.ok) {
+        payment.referrerShareNanoton = reconciled.referrerShareNanoton.toString();
+        payment.treasuryShareNanoton = reconciled.treasuryShareNanoton.toString();
+        payment.netAmountNanoton = reconciled.netNanoton.toString();
+        payment.settlementNotes =
+          `Settled fee-aware 50/50 of on-chain net ${reconciled.netNanoton} (estimates are not guarantees; unused RAWRESERVE stays on contract)`;
+      } else if (legs.referrer || legs.treasury) {
+        payment.settlementNotes =
+          'Outbound legs found but not a balanced 50/50 of net — leaving PARTIALLY_SETTLED / pending';
+        referrerVerified = Boolean(legs.referrer);
+        treasuryVerified = Boolean(legs.treasury);
+        // If both exist but unbalanced, do not confirm
+        if (legs.referrer && legs.treasury && !reconciled.balanced50_50) {
+          referrerVerified = false;
+          treasuryVerified = false;
+          payment.status = 'PARTIALLY_SETTLED';
+          payment.failureReason = 'Outbound payouts present but not 50/50 of net';
+          await payment.save();
+          return { payment: serializePayment(payment), partiallySettled: true };
+        }
+      }
+    } else {
+      treasuryVerified = Boolean(legs.treasury);
+      referrerVerified = true;
+      if (legs.treasury) {
+        payment.treasuryShareNanoton = legs.treasury.valueNanoton;
+        payment.referrerShareNanoton = '0';
+        payment.netAmountNanoton = legs.treasury.valueNanoton;
+      }
     }
   } else {
     if (needsCommission && payment.referrerWallet && payment.referrerPayoutTxHash) {
@@ -501,7 +541,7 @@ export async function confirmTonPayment(paymentId, telegramId, options = {}) {
         txHash: payment.referrerPayoutTxHash,
         expectedSender: recipient,
         expectedRecipient: payment.referrerWallet,
-        minValueNanoton: payment.referrerShareNanoton
+        minValueNanoton: '1'
       });
       referrerVerified = refOut.found;
     }
@@ -510,7 +550,7 @@ export async function confirmTonPayment(paymentId, telegramId, options = {}) {
         txHash: payment.treasuryPayoutTxHash,
         expectedSender: recipient,
         expectedRecipient: payment.treasuryWallet,
-        minValueNanoton: payment.treasuryShareNanoton
+        minValueNanoton: '1'
       });
       treasuryVerified = treOut.found;
     }
@@ -710,11 +750,12 @@ export async function getTonSubscriptionQuote(telegramId) {
     estimatedReferrerShareNanoton: split.referrerShareNanoton.toString(),
     estimatedTreasuryShareNanoton: split.treasuryShareNanoton.toString(),
     commissionEligible,
+    isEstimate: true,
     subscriptionDurationDays: Number(process.env.TON_SUBSCRIPTION_DURATION_DAYS || 30),
     feePolicyVersion: FEE_POLICY_VERSION,
     splitVersion: SPLIT_VERSION,
     feePolicy:
-      'On-chain V3 router reserves execution gas (RAWRESERVE) and forward fees (GETFORWARDFEE × outbound count), then routes commission (if any) and remainder to treasury. Odd nanotons → treasury on 50/50.',
+      'ESTIMATE only. On-chain v3.1: RAWRESERVE(exec) + GETFORWARDFEE×N, then 50/50 of net if eligible (odd nano → treasury). Unused reserve stays on contract (sweep_excess). Not 50% of gross.',
     contractAddress: getContractAddress(),
     treasuryAddress: process.env.TON_TESTNET_TREASURY_ADDRESS || null,
     economicRule: economicRuleFor(commissionEligible)

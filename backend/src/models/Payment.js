@@ -39,6 +39,8 @@ const paymentSchema = new mongoose.Schema({
   netAmountNanoton: { type: String, default: null },
   referrerShareNanoton: { type: String, default: null },
   treasuryShareNanoton: { type: String, default: null },
+  /** Signed auth eligibility flag (\"1\" / \"0\"); payout amounts come from on-chain net. */
+  commissionAuthNanoton: { type: String, default: null },
   subscriberWallet: { type: String, default: null },
   referrerId: { type: String, default: null },
   referrerWallet: { type: String, default: null },

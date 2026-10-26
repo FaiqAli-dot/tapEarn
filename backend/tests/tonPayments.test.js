@@ -109,7 +109,7 @@ describe('TON payment split + auth (v3)', () => {
     assert.equal(split.treasuryShareNanoton, split.netNanoton);
   });
 
-  it('builds signed contract payload including commission field', async () => {
+  it('builds signed contract payload with eligibility flag (not estimated half)', async () => {
     const fakePayment = {
       _id: new mongoose.Types.ObjectId(),
       subscriberWallet: SUBSCRIBER_WALLET,
@@ -117,6 +117,7 @@ describe('TON payment split + auth (v3)', () => {
       treasuryWallet: process.env.TON_TESTNET_TREASURY_ADDRESS,
       grossAmountNanoton: '100000000',
       referrerShareNanoton: '40000000',
+      commissionAuthNanoton: '1',
       expiresAt: new Date(Date.now() + 600000),
       authorizationNonce: '42'
     };
@@ -124,7 +125,8 @@ describe('TON payment split + auth (v3)', () => {
     assert.ok(signed.payloadBoc);
     assert.ok(signed.signatureHex);
     assert.equal(signed.signatureHex.length, 128);
-    assert.equal(signed.commissionNanoton, '40000000');
+    // v3.1: signed commission is eligibility (>0), not the estimated referrer share
+    assert.equal(signed.commissionNanoton, '1');
   });
 });
 
