@@ -54,6 +54,10 @@ export async function deactivateCampaign(campaignId) {
   );
 }
 
+export async function deleteCampaign(campaignId) {
+  return Campaign.findByIdAndDelete(campaignId);
+}
+
 export async function getCampaignStats(campaignId) {
   const campaign = await Campaign.findById(campaignId);
   if (!campaign) throw new Error('Campaign not found');

@@ -140,3 +140,96 @@
 ::-webkit-scrollbar-thumb:hover {
   background: #a8a8a8;
 }
+
+/* YORZA public Pages (/home, /admin-panel) */
+.yorza-public {
+  --yorza-gold: #e8c547;
+  --yorza-cyan: #2ef2ff;
+  --yorza-black: #050505;
+  position: relative;
+  font-family: Outfit, system-ui, sans-serif;
+  background: var(--yorza-black);
+  color: #fff;
+}
+
+.yorza-public__bg {
+  position: absolute;
+  inset: 0;
+  background:
+    radial-gradient(ellipse 80% 50% at 15% 20%, rgba(232, 197, 71, 0.18), transparent 55%),
+    radial-gradient(ellipse 70% 45% at 85% 15%, rgba(46, 242, 255, 0.14), transparent 50%),
+    radial-gradient(ellipse 60% 40% at 50% 100%, rgba(232, 197, 71, 0.08), transparent 45%),
+    linear-gradient(165deg, #050505 0%, #0a0c12 45%, #050508 100%);
+  pointer-events: none;
+}
+
+.yorza-public__grid {
+  position: absolute;
+  inset: 0;
+  background-image:
+    linear-gradient(rgba(255, 255, 255, 0.03) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(255, 255, 255, 0.03) 1px, transparent 1px);
+  background-size: 48px 48px;
+  mask-image: radial-gradient(ellipse 70% 60% at 50% 30%, black, transparent);
+  pointer-events: none;
+  opacity: 0.5;
+}
+
+.yorza-orb {
+  background: radial-gradient(circle at 35% 35%, rgba(46, 242, 255, 0.55), rgba(232, 197, 71, 0.25) 45%, transparent 70%);
+  filter: blur(2px);
+  animation: yorza-orb-pulse 6s ease-in-out infinite;
+}
+
+@keyframes yorza-orb-pulse {
+  0%, 100% { transform: scale(1); opacity: 0.85; }
+  50% { transform: scale(1.06); opacity: 1; }
+}
+
+.yorza-cta {
+  background: linear-gradient(120deg, #e8c547 0%, #f0d978 45%, #2ef2ff 160%);
+  transition: transform 0.2s ease, box-shadow 0.2s ease, filter 0.2s ease;
+  box-shadow: 0 0 24px rgba(232, 197, 71, 0.25);
+}
+
+.yorza-cta:hover {
+  transform: translateY(-1px);
+  filter: brightness(1.05);
+  box-shadow: 0 0 32px rgba(46, 242, 255, 0.3);
+}
+
+.yorza-panel {
+  background: rgba(10, 12, 18, 0.72);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  backdrop-filter: blur(12px);
+}
+
+.yorza-input {
+  width: 100%;
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  color: #fff;
+  padding: 0.65rem 0.85rem;
+  outline: none;
+  font-size: 0.95rem;
+}
+
+.yorza-input:focus {
+  border-color: rgba(46, 242, 255, 0.55);
+}
+
+.yorza-input::placeholder {
+  color: rgba(255, 255, 255, 0.35);
+}
+
+.yorza-input option {
+  background: #0a0c12;
+  color: #fff;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .yorza-orb {
+    animation: none;
+  }
+}
+

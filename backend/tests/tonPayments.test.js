@@ -11,8 +11,20 @@ import Payment from '../src/models/Payment.js';
 import ReferralTonPayout from '../src/models/ReferralTonPayout.js';
 import TonProofNonce from '../src/models/TonProofNonce.js';
 import { computePaymentSplit } from '../src/config/tonConfig.js';
-import { verifyAuthorizationSignature, signAuthorizationPayload, buildAuthorizationPayload } from '../src/services/tonAuthSigner.js';
+import { buildAuthorizationPayload } from '../src/services/tonAuthSigner.js';
+import { buildSignedSubscribePayload } from '../src/services/tonContractPayload.js';
 
+import { Address } from 'ton-core';
+
+function testWallet(seed) {
+  const hex = BigInt(seed).toString(16).padStart(64, '0');
+  return Address.parseRaw(`0:${hex}`).toString();
+}
+
+const REFERRER_WALLET = testWallet(1);
+const SUBSCRIBER_WALLET = testWallet(2);
+const SUBSCRIBER_ONLY_WALLET = testWallet(3);
+const SELF_WALLET = testWallet(4);
 let memoryServer;
 let app;
 let testPrivateKeyHex;
@@ -56,6 +68,8 @@ before(async () => {
   process.env.TON_NETWORK = 'testnet';
   process.env.TON_SUBSCRIPTION_AMOUNT = '0.1';
   process.env.TON_TESTNET_TREASURY_ADDRESS = 'EQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAM9c';
+  process.env.TON_TESTNET_REFERRAL_CONTRACT_ADDRESS =
+    'EQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAM9d';
   process.env.TON_PAYMENT_SIGNER_PRIVATE_KEY = testPrivateKeyHex;
   process.env.TON_CHAIN_MOCK = 'true';
   process.env.TON_CONNECT_DOMAIN = 'localhost';
@@ -88,26 +102,19 @@ describe('TON payment split + auth', () => {
     assert.equal(split.referrerShareNanoton + split.treasuryShareNanoton, split.netNanoton);
   });
 
-  it('signs and verifies authorization payload', async () => {
+  it('builds signed contract payload for subscribe op', async () => {
     const fakePayment = {
       _id: new mongoose.Types.ObjectId(),
-      subscriberWallet: 'EQsub',
-      referrerWallet: 'EQref',
-      treasuryWallet: 'EQtre',
+      subscriberWallet: SUBSCRIBER_WALLET,
+      referrerWallet: REFERRER_WALLET,
       grossAmountNanoton: '100000000',
-      feeReserveNanoton: '50000000',
-      netAmountNanoton: '50000000',
-      referrerShareNanoton: '25000000',
-      treasuryShareNanoton: '25000000',
-      contractAddress: null,
-      network: 'testnet',
-      feePolicyVersion: 'v1',
-      splitVersion: 'v1',
-      expiresAt: new Date(Date.now() + 600000)
+      expiresAt: new Date(Date.now() + 600000),
+      authorizationNonce: '42'
     };
-    const payload = buildAuthorizationPayload(fakePayment);
-    const sig = signAuthorizationPayload(payload);
-    assert.equal(verifyAuthorizationSignature(payload, sig), true);
+    const signed = buildSignedSubscribePayload(fakePayment);
+    assert.ok(signed.payloadBoc);
+    assert.ok(signed.signatureHex);
+    assert.equal(signed.signatureHex.length, 128);
   });
 });
 
@@ -138,10 +145,10 @@ describe('Payment intent', () => {
 
   it('creates authorized intent for subscriber with verified referrer', async () => {
     const referrer = await createUser('2100');
-    await markWalletVerified('2100', 'EQreferrerwallet0000000000000000000000000000001');
+    await markWalletVerified('2100', REFERRER_WALLET);
 
     await createUser('2101', { referrerId: '2100', referredBy: referrer.referralCode });
-    await markWalletVerified('2101', 'EQsubscriberwallet000000000000000000000000000001');
+    await markWalletVerified('2101', SUBSCRIBER_WALLET);
 
     const res = await request(app)
       .post('/api/payments/intent')
@@ -149,14 +156,18 @@ describe('Payment intent', () => {
 
     assert.equal(res.status, 201);
     assert.equal(res.body.payment.status, 'AUTHORIZED');
-    assert.ok(res.body.payment.authorizationSignature);
-    assert.equal(res.body.payment.referrerShareNanoton, computePaymentSplit(100_000_000n).referrerShareNanoton.toString());
+    assert.ok(res.body.payment.contractPayloadBoc);
+    assert.ok(res.body.payment.paymentIdUint256);
+    assert.equal(
+      res.body.payment.referrerShareNanoton,
+      computePaymentSplit(100_000_000n).referrerShareNanoton.toString()
+    );
   });
 
   it('does not authorize payout when referrer lacks verified wallet', async () => {
     const referrer = await createUser('2200');
     await createUser('2201', { referrerId: '2200', referredBy: referrer.referralCode });
-    await markWalletVerified('2201', 'EQsubscriberonly00000000000000000000000000000002');
+    await markWalletVerified('2201', SUBSCRIBER_ONLY_WALLET);
 
     const res = await request(app)
       .post('/api/payments/intent')
@@ -168,7 +179,7 @@ describe('Payment intent', () => {
 
   it('prevents self-referral payout destination mismatch via server referrer lock', async () => {
     const user = await createUser('2300');
-    await markWalletVerified('2300', 'EQself000000000000000000000000000000000000003');
+    await markWalletVerified('2300', SELF_WALLET);
     const res = await request(app)
       .post('/api/payments/intent')
       .set(authHeader('2300'));
@@ -180,9 +191,9 @@ describe('Payment intent', () => {
 describe('Payment confirmation', () => {
   it('confirms when inbound and both payouts verified (mock chain)', async () => {
     const referrer = await createUser('3000');
-    await markWalletVerified('3000', 'EQreferrer300000000000000000000000000000000004');
+    await markWalletVerified('3000', testWallet(3000));
     await createUser('3001', { referrerId: '3000', referredBy: referrer.referralCode });
-    await markWalletVerified('3001', 'EQsubscriber30000000000000000000000000000000005');
+    await markWalletVerified('3001', testWallet(3001));
 
     const intent = await request(app)
       .post('/api/payments/intent')
@@ -220,7 +231,7 @@ describe('Payment confirmation', () => {
 
   it('rejects duplicate externalPaymentId at database level', async () => {
     await createUser('3100');
-    await markWalletVerified('3100', 'EQsubscriber31000000000000000000000000000000006');
+    await markWalletVerified('3100', testWallet(3100));
     const intent = await request(app)
       .post('/api/payments/intent')
       .set(authHeader('3100'));
@@ -239,9 +250,9 @@ describe('Payment confirmation', () => {
 
   it('marks PARTIALLY_SETTLED when only one outbound verified', async () => {
     const referrer = await createUser('3201');
-    await markWalletVerified('3201', 'EQreferrer320000000000000000000000000000000008');
+    await markWalletVerified('3201', testWallet(3201));
     await createUser('3200', { referrerId: '3201', referredBy: referrer.referralCode });
-    await markWalletVerified('3200', 'EQsubscriber32000000000000000000000000000000007');
+    await markWalletVerified('3200', testWallet(3200));
     const intent = await request(app)
       .post('/api/payments/intent')
       .set(authHeader('3200'));
@@ -265,7 +276,7 @@ describe('Payment confirmation', () => {
 
 describe('Payment history', () => {
   it('returns subscription and TON payout history', async () => {
-    await markWalletVerified('4000', 'EQsubscriber40000000000000000000000000000000008');
+    await markWalletVerified('4000', testWallet(4000));
     await request(app).post('/api/payments/intent').set(authHeader('4000'));
 
     const history = await request(app)

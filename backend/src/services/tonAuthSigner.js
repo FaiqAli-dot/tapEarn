@@ -33,55 +33,29 @@ export function getSignerPublicKeyHex() {
 }
 
 /**
- * Canonical authorization payload signed by backend only (never trust client fields).
+ * API-facing authorization metadata (amounts are server-chosen; signature is on-chain auth cell).
  */
 export function buildAuthorizationPayload(payment) {
   return {
-    v: 1,
+    v: 2,
     paymentId: String(payment._id),
+    paymentIdUint256: payment.paymentIdUint256,
     subscriberWallet: payment.subscriberWallet,
     referrerWallet: payment.referrerWallet,
     treasuryWallet: payment.treasuryWallet,
     grossAmountNanoton: payment.grossAmountNanoton,
-    feeReserveNanoton: payment.feeReserveNanoton,
+    executionReserveNanoton: payment.executionReserveNanoton,
+    outgoingFeesNanoton: payment.outgoingFeesNanoton,
     netAmountNanoton: payment.netAmountNanoton,
     referrerShareNanoton: payment.referrerShareNanoton,
     treasuryShareNanoton: payment.treasuryShareNanoton,
+    authorizationNonce: payment.authorizationNonce,
     contractAddress: payment.contractAddress,
     network: payment.network,
     feePolicyVersion: payment.feePolicyVersion,
     splitVersion: payment.splitVersion,
     expiresAt: payment.expiresAt?.toISOString?.() || payment.expiresAt
   };
-}
-
-export function canonicalPayloadString(payload) {
-  return JSON.stringify(payload, Object.keys(payload).sort());
-}
-
-export function signAuthorizationPayload(payload) {
-  const privateKey = getPrivateKeyObject();
-  const message = Buffer.from(canonicalPayloadString(payload), 'utf8');
-  const signature = crypto.sign(null, message, privateKey);
-  return signature.toString('hex');
-}
-
-export function verifyAuthorizationSignature(payload, signatureHex) {
-  try {
-    const publicHex = getSignerPublicKeyHex();
-    const publicKey = crypto.createPublicKey({
-      key: Buffer.concat([
-        Buffer.from('302a300506032b6570032100', 'hex'),
-        Buffer.from(publicHex, 'hex')
-      ]),
-      format: 'der',
-      type: 'spki'
-    });
-    const message = Buffer.from(canonicalPayloadString(payload), 'utf8');
-    return crypto.verify(null, message, publicKey, Buffer.from(signatureHex, 'hex'));
-  } catch {
-    return false;
-  }
 }
 
 export function isSignerConfigured() {

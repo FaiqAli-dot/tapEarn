@@ -15,14 +15,28 @@ export const PAYMENT_STATUSES = [
   'EXPIRED'
 ];
 
-export const FEE_POLICY_VERSION = 'v1';
-export const SPLIT_VERSION = 'v1';
+export const FEE_POLICY_VERSION = 'v2-router';
+export const SPLIT_VERSION = 'v2-50-50';
 
 /** Default subscription gross amount in TON (testnet). Override via TON_SUBSCRIPTION_AMOUNT. */
 export const DEFAULT_SUBSCRIPTION_TON = 0.1;
 
-/** Reserved nanotons deducted from gross before 50/50 split (forward fees + processing). */
-export const FEE_RESERVE_NANOTON = BigInt(50_000_000); // 0.05 TON
+/** Mirrors ReferralPayment.fc OUT_MSG_BITS / OUT_MSG_CELLS forward-fee estimate inputs. */
+export const OUT_MSG_BITS = 6 + 267 + 124 + 1 + 4 + 4 + 64 + 32 + 1 + 1;
+export const OUT_MSG_CELLS = 1;
+
+/** Mirrors contract EXEC_BASE_GAS + EXEC_DICT_OP (not an arbitrary gross deduction). */
+export const EXEC_RESERVE_NANOTON = BigInt(4_000_000 + 3_500_000);
+
+/**
+ * Testnet forward-fee lump from config param 25 (approx; contract uses GETFORWARDFEE on-chain).
+ * Override via TON_TESTNET_FWD_FEE_NANOTON for integration tests.
+ */
+export function getEstimatedForwardFeeNanoton() {
+  const override = process.env.TON_TESTNET_FWD_FEE_NANOTON;
+  if (override) return BigInt(override);
+  return 2_500_000n;
+}
 
 export function getSubscriptionAmountNanoton() {
   const ton = parseFloat(process.env.TON_SUBSCRIPTION_AMOUNT || String(DEFAULT_SUBSCRIPTION_TON));
@@ -73,22 +87,32 @@ export function assertTestnetOnly(network) {
 }
 
 /**
- * Economic rule: after fee reserve, net is split 50/50 with odd-nanoton remainder to treasury.
- * @returns {{ grossNanoton: bigint, feeReserveNanoton: bigint, netNanoton: bigint, referrerShareNanoton: bigint, treasuryShareNanoton: bigint }}
+ * Estimate split using same formula as on-chain router (GETFORWARDFEE mirrored off-chain).
+ * Odd nanotons go to treasury. Actual on-chain amounts may differ slightly if config changes.
  */
-export function computePaymentSplit(grossNanoton, feeReserveNanoton = FEE_RESERVE_NANOTON) {
+export function computePaymentSplit(grossNanoton) {
   const gross = BigInt(grossNanoton);
-  const fees = BigInt(feeReserveNanoton);
-  if (gross <= fees) {
-    throw new Error('Gross amount must exceed fee reserve');
+  const fwdFee = getEstimatedForwardFeeNanoton();
+  const outgoingFees = fwdFee * 2n;
+  const executionReserve = EXEC_RESERVE_NANOTON;
+  const totalFees = outgoingFees + executionReserve;
+
+  if (gross <= totalFees) {
+    throw new Error('Gross amount must exceed estimated execution and forward fees');
   }
-  const net = gross - fees;
-  const referrerShare = net / 2n;
-  const treasuryShare = net - referrerShare;
+
+  const distributable = gross - totalFees;
+  const referrerShare = distributable / 2n;
+  const treasuryShare = distributable - referrerShare;
+
   return {
     grossNanoton: gross,
-    feeReserveNanoton: fees,
-    netNanoton: net,
+    executionReserveNanoton: executionReserve,
+    outgoingFeesNanoton: outgoingFees,
+    forwardFeePerMessageNanoton: fwdFee,
+    distributableNanoton: distributable,
+    netAmountNanoton: distributable,
+    netNanoton: distributable,
     referrerShareNanoton: referrerShare,
     treasuryShareNanoton: treasuryShare
   };

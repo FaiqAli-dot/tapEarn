@@ -12,11 +12,12 @@ import {
   getSubscriptionAmountNanoton,
   getTreasuryAddress
 } from '../config/tonConfig.js';
+import { buildAuthorizationPayload, isSignerConfigured } from '../services/tonAuthSigner.js';
 import {
-  buildAuthorizationPayload,
-  isSignerConfigured,
-  signAuthorizationPayload
-} from '../services/tonAuthSigner.js';
+  buildSignedSubscribePayload,
+  generateAuthorizationNonce,
+  paymentIdToUint256
+} from '../services/tonContractPayload.js';
 import {
   getTestnetExplorerTxUrl,
   verifyInboundTonPayment,
@@ -33,7 +34,8 @@ function serializePayment(payment, extras = {}) {
     paymentKind: payment.paymentKind,
     network: payment.network,
     grossAmountNanoton: payment.grossAmountNanoton,
-    feeReserveNanoton: payment.feeReserveNanoton,
+    executionReserveNanoton: payment.executionReserveNanoton,
+    outgoingFeesNanoton: payment.outgoingFeesNanoton,
     netAmountNanoton: payment.netAmountNanoton,
     referrerShareNanoton: payment.referrerShareNanoton,
     treasuryShareNanoton: payment.treasuryShareNanoton,
@@ -41,11 +43,13 @@ function serializePayment(payment, extras = {}) {
     referrerWallet: payment.referrerWallet,
     treasuryWallet: payment.treasuryWallet,
     contractAddress: payment.contractAddress,
+    contractPayloadBoc: payment.contractPayloadBoc,
+    paymentIdUint256: payment.paymentIdUint256,
+    authorizationNonce: payment.authorizationNonce,
     inboundTxHash: payment.inboundTxHash,
     referrerPayoutTxHash: payment.referrerPayoutTxHash,
     treasuryPayoutTxHash: payment.treasuryPayoutTxHash,
     authorizationPayload: payment.authorizationPayload,
-    authorizationSignature: payment.authorizationSignature,
     feePolicyVersion: payment.feePolicyVersion,
     splitVersion: payment.splitVersion,
     expiresAt: payment.expiresAt,
@@ -99,8 +103,9 @@ export async function createTonSubscriptionIntent(telegramId) {
     currency: 'TON',
     network: TON_NETWORK,
     grossAmountNanoton: split.grossNanoton.toString(),
-    feeReserveNanoton: split.feeReserveNanoton.toString(),
-    netAmountNanoton: split.netNanoton.toString(),
+    executionReserveNanoton: split.executionReserveNanoton.toString(),
+    outgoingFeesNanoton: split.outgoingFeesNanoton.toString(),
+    netAmountNanoton: split.netAmountNanoton.toString(),
     referrerShareNanoton: split.referrerShareNanoton.toString(),
     treasuryShareNanoton: split.treasuryShareNanoton.toString(),
     subscriberWallet: subscriber.walletAddress,
@@ -114,6 +119,8 @@ export async function createTonSubscriptionIntent(telegramId) {
     isFirstPayment: false,
     referrerRewardGranted: false
   });
+
+  payment.paymentIdUint256 = paymentIdToUint256(payment._id).toString();
 
   const priorPayments = await Payment.countDocuments({
     userId: String(telegramId),
@@ -135,9 +142,16 @@ export async function createTonSubscriptionIntent(telegramId) {
         referrerEligible: false,
         canAuthorizePayout: false,
         economicRule:
-          'After applicable TON transaction and payout fees are deducted, the remaining net subscription amount is split 50/50 between the verified referrer and YORZA.'
+          'After on-chain execution and forward fees are reserved, the remaining amount is split 50/50 between the verified referrer and YORZA.'
       })
     };
+  }
+
+  if (!contractAddress) {
+    payment.status = 'FAILED';
+    payment.failureReason = 'TON_TESTNET_REFERRAL_CONTRACT_ADDRESS is not configured';
+    await payment.save();
+    throw new Error('TON_TESTNET_REFERRAL_CONTRACT_ADDRESS is not configured');
   }
 
   if (!isSignerConfigured()) {
@@ -147,11 +161,10 @@ export async function createTonSubscriptionIntent(telegramId) {
     throw new Error('TON_PAYMENT_SIGNER_PRIVATE_KEY is not configured');
   }
 
-  const authorizationPayload = buildAuthorizationPayload(payment);
-  const authorizationSignature = signAuthorizationPayload(authorizationPayload);
-
-  payment.authorizationPayload = authorizationPayload;
-  payment.authorizationSignature = authorizationSignature;
+  payment.authorizationNonce = generateAuthorizationNonce();
+  const signed = buildSignedSubscribePayload(payment);
+  payment.contractPayloadBoc = signed.payloadBoc;
+  payment.authorizationPayload = buildAuthorizationPayload(payment);
   payment.status = 'AUTHORIZED';
   await payment.save();
 
@@ -159,9 +172,10 @@ export async function createTonSubscriptionIntent(telegramId) {
     payment: serializePayment(payment, {
       referrerEligible: true,
       canAuthorizePayout: true,
-      estimatedFeesNote: 'Fee reserve is an estimate; final fees determined on-chain',
+      estimatedFeesNote:
+        'Execution and forward fees are reserved on-chain via RAWRESERVE/GETFORWARDFEE; estimates may differ slightly from actual.',
       economicRule:
-        'After applicable TON transaction and payout fees are deducted, the remaining net subscription amount is split 50/50 between the verified referrer and YORZA.'
+        'After on-chain execution and forward fees are reserved, the remaining amount is split 50/50 between the verified referrer and YORZA.'
     })
   };
 }
@@ -397,19 +411,21 @@ export async function getTonSubscriptionQuote() {
     network: TON_NETWORK,
     grossAmountNanoton: split.grossNanoton.toString(),
     grossAmountTon: Number(split.grossNanoton) / 1e9,
-    feeReserveNanoton: split.feeReserveNanoton.toString(),
-    feeReserveTon: Number(split.feeReserveNanoton) / 1e9,
-    estimatedNetNanoton: split.netNanoton.toString(),
-    estimatedNetTon: Number(split.netNanoton) / 1e9,
+    executionReserveNanoton: split.executionReserveNanoton.toString(),
+    executionReserveTon: Number(split.executionReserveNanoton) / 1e9,
+    outgoingFeesNanoton: split.outgoingFeesNanoton.toString(),
+    outgoingFeesTon: Number(split.outgoingFeesNanoton) / 1e9,
+    estimatedNetNanoton: split.netAmountNanoton.toString(),
+    estimatedNetTon: Number(split.netAmountNanoton) / 1e9,
     estimatedReferrerShareNanoton: split.referrerShareNanoton.toString(),
     estimatedTreasuryShareNanoton: split.treasuryShareNanoton.toString(),
     feePolicyVersion: FEE_POLICY_VERSION,
     splitVersion: SPLIT_VERSION,
     feePolicy:
-      'Fee reserve (estimate) is deducted from gross before 50/50 net split. Odd nanotons go to treasury.',
+      'On-chain router reserves execution gas (RAWRESERVE) and two forward fees (GETFORWARDFEE), then splits remainder 50/50. Odd nanotons go to treasury.',
     contractAddress: getContractAddress(),
     treasuryAddress: process.env.TON_TESTNET_TREASURY_ADDRESS || null,
     economicRule:
-      'After applicable TON transaction and payout fees are deducted, the remaining net subscription amount is split 50/50 between the verified referrer and YORZA.'
+      'After on-chain execution and forward fees are reserved, the remaining amount is split 50/50 between the verified referrer and YORZA.'
   };
 }

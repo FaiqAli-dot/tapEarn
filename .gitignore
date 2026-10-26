@@ -219,3 +219,8 @@ pnpm-lock.yaml
 # Local development files
 .local
 local/
+
+# TON deploy secrets (throwaway testnet wallets — never commit)
+contracts/.deploy-secrets.json
+contracts/deploy-report.json
+contracts/node_modules/

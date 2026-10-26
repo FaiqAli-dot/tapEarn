@@ -26,10 +26,13 @@ type PaymentRecord = {
   id: string
   status: string
   grossAmountNanoton?: string
-  feeReserveNanoton?: string
+  executionReserveNanoton?: string
+  outgoingFeesNanoton?: string
   netAmountNanoton?: string
   referrerShareNanoton?: string
   treasuryShareNanoton?: string
+  contractAddress?: string | null
+  contractPayloadBoc?: string | null
   inboundTxHash?: string | null
   referrerPayoutTxHash?: string | null
   treasuryPayoutTxHash?: string | null
@@ -185,16 +188,18 @@ const ConnectWalletScreen: React.FC<ConnectWalletScreenProps> = ({
       const payment = intent.payment as PaymentRecord
       setActivePayment(payment)
 
-      const dest =
-        (payment.authorizationPayload?.contractAddress as string) ||
-        (payment.authorizationPayload?.treasuryWallet as string)
-
+      const dest = payment.contractAddress
       if (!dest) {
-        throw new Error('Payment destination not configured on server')
+        throw new Error('Contract address not configured on server')
       }
 
       const amount = payment.grossAmountNanoton || quote?.grossAmountNanoton
       if (!amount) throw new Error('Missing subscription amount from server')
+
+      const payload = payment.contractPayloadBoc
+      if (!payload) {
+        throw new Error('Missing signed contract payload from server')
+      }
 
       const tx = await tonConnectUI.sendTransaction({
         validUntil: Math.floor(Date.now() / 1000) + 600,
@@ -203,6 +208,7 @@ const ConnectWalletScreen: React.FC<ConnectWalletScreenProps> = ({
           {
             address: dest,
             amount,
+            payload,
           },
         ],
       })
@@ -346,8 +352,12 @@ const ConnectWalletScreen: React.FC<ConnectWalletScreenProps> = ({
               <div className="font-semibold">{quote.grossAmountTon} TON</div>
             </div>
             <div className="p-2 bg-gray-50 rounded">
-              <div className="text-gray-500 text-xs">Est. fees (reserve)</div>
-              <div className="font-semibold">{quote.feeReserveTon} TON</div>
+              <div className="text-gray-500 text-xs">Est. execution reserve</div>
+              <div className="font-semibold">{quote.executionReserveTon} TON</div>
+            </div>
+            <div className="p-2 bg-gray-50 rounded">
+              <div className="text-gray-500 text-xs">Est. forward fees (2×)</div>
+              <div className="font-semibold">{quote.outgoingFeesTon} TON</div>
             </div>
             <div className="p-2 bg-gray-50 rounded">
               <div className="text-gray-500 text-xs">Est. net</div>
@@ -383,8 +393,9 @@ const ConnectWalletScreen: React.FC<ConnectWalletScreenProps> = ({
               Status: <span className="font-medium">{activePayment.status}</span>
             </p>
             <p>Gross: {formatTon(activePayment.grossAmountNanoton)}</p>
-            <p>Fee reserve: {formatTon(activePayment.feeReserveNanoton)}</p>
-            <p>Net: {formatTon(activePayment.netAmountNanoton)}</p>
+            <p>Execution reserve (est.): {formatTon(activePayment.executionReserveNanoton)}</p>
+            <p>Forward fees (est.): {formatTon(activePayment.outgoingFeesNanoton)}</p>
+            <p>Net (distributable est.): {formatTon(activePayment.netAmountNanoton)}</p>
             <p>Referrer payout (50% net): {formatTon(activePayment.referrerShareNanoton)}</p>
             <p>Treasury share: {formatTon(activePayment.treasuryShareNanoton)}</p>
             {activePayment.status === 'PARTIALLY_SETTLED' && (
