@@ -91,6 +91,17 @@ const userSchema = new mongoose.Schema({
   walletVerified: { type: Boolean, default: false },
   walletVerifiedAt: { type: Date, default: null },
   tonSubscriptionReferralEarningsNanoton: { type: String, default: '0' },
+
+  // TON subscription entitlement (activated only after verified on-chain settlement)
+  tonSubscriptionActive: { type: Boolean, default: false },
+  tonSubscriptionExpiresAt: { type: Date, default: null },
+  tonSubscriptionActivatedAt: { type: Date, default: null },
+  tonSubscriptionLastPaymentId: { type: mongoose.Schema.Types.ObjectId, ref: 'Payment', default: null },
+  /** First-payment TON commission consumed (CONFIRMED with commission > 0). */
+  tonFirstCommissionConsumed: { type: Boolean, default: false },
+  /** Open intent holding first-commission eligibility (cleared on FAIL/EXPIRE or after confirm). */
+  tonFirstCommissionLockPaymentId: { type: mongoose.Schema.Types.ObjectId, ref: 'Payment', default: null },
+  tonFirstCommissionLockAt: { type: Date, default: null },
   
   // Timestamps
   lastDailyReward: Date,

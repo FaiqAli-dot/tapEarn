@@ -8,9 +8,9 @@ import {
   submitTonPaymentTx
 } from '../services/tonPaymentService.js';
 
-export async function paymentQuote(_req, res) {
+export async function paymentQuote(req, res) {
   try {
-    const quote = await getTonSubscriptionQuote();
+    const quote = await getTonSubscriptionQuote(req.telegramId);
     res.json({ success: true, data: quote });
   } catch (error) {
     res.status(400).json({ success: false, error: error.message });
@@ -37,11 +37,19 @@ export async function getPayment(req, res) {
 
 export async function submitPayment(req, res) {
   try {
-    const { inboundTxHash } = req.body;
-    if (!inboundTxHash) {
-      return res.status(400).json({ success: false, error: 'inboundTxHash is required' });
+    const { inboundTxHash, inboundBoc } = req.body;
+    if (!inboundTxHash && !inboundBoc) {
+      return res.status(400).json({
+        success: false,
+        error: 'inboundTxHash or inboundBoc is required'
+      });
     }
-    const result = await submitTonPaymentTx(req.params.id, req.telegramId, inboundTxHash);
+    const result = await submitTonPaymentTx(
+      req.params.id,
+      req.telegramId,
+      inboundTxHash || inboundBoc,
+      { inboundBoc }
+    );
     res.json({ success: true, ...result });
   } catch (error) {
     res.status(400).json({ success: false, error: error.message });

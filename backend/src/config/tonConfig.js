@@ -1,5 +1,5 @@
 /**
- * TON testnet configuration. MAINNET is intentionally unsupported in V2.
+ * TON testnet configuration. MAINNET is intentionally unsupported.
  */
 
 export const TON_NETWORK = 'testnet';
@@ -15,17 +15,20 @@ export const PAYMENT_STATUSES = [
   'EXPIRED'
 ];
 
-export const FEE_POLICY_VERSION = 'v2-router';
-export const SPLIT_VERSION = 'v2-50-50';
+export const FEE_POLICY_VERSION = 'v3-router';
+export const SPLIT_VERSION = 'v3-first-commission';
 
 /** Default subscription gross amount in TON (testnet). Override via TON_SUBSCRIPTION_AMOUNT. */
 export const DEFAULT_SUBSCRIPTION_TON = 0.1;
+
+/** Subscription duration in days after confirmed settlement. */
+export const DEFAULT_SUBSCRIPTION_DAYS = 30;
 
 /** Mirrors ReferralPayment.fc OUT_MSG_BITS / OUT_MSG_CELLS forward-fee estimate inputs. */
 export const OUT_MSG_BITS = 6 + 267 + 124 + 1 + 4 + 4 + 64 + 32 + 1 + 1;
 export const OUT_MSG_CELLS = 1;
 
-/** Mirrors contract EXEC_BASE_GAS + EXEC_DICT_OP (not an arbitrary gross deduction). */
+/** Mirrors contract EXEC_BASE_GAS + EXEC_DICT_OP. */
 export const EXEC_RESERVE_NANOTON = BigInt(4_000_000 + 3_500_000);
 
 /**
@@ -44,6 +47,14 @@ export function getSubscriptionAmountNanoton() {
     throw new Error('TON_SUBSCRIPTION_AMOUNT must be a positive number');
   }
   return BigInt(Math.round(ton * 1e9));
+}
+
+export function getSubscriptionDurationMs() {
+  const days = parseFloat(process.env.TON_SUBSCRIPTION_DURATION_DAYS || String(DEFAULT_SUBSCRIPTION_DAYS));
+  if (!Number.isFinite(days) || days <= 0) {
+    throw new Error('TON_SUBSCRIPTION_DURATION_DAYS must be a positive number');
+  }
+  return Math.round(days * 24 * 60 * 60 * 1000);
 }
 
 export function getTreasuryAddress() {
@@ -87,13 +98,21 @@ export function assertTestnetOnly(network) {
 }
 
 /**
- * Estimate split using same formula as on-chain router (GETFORWARDFEE mirrored off-chain).
- * Odd nanotons go to treasury. Actual on-chain amounts may differ slightly if config changes.
+ * Estimate split using same formula as on-chain V3 router.
+ *
+ * @param {bigint|string|number} grossNanoton
+ * @param {{ commissionEligible?: boolean }} [options]
+ *   commissionEligible true → 50% of distributable to referrer (first payment only).
+ *   false → commission 0, full distributable to treasury (1 outbound msg → 1 fwd fee).
+ *
+ * Odd nanotons: when splitting 50/50, referrer = floor(distributable/2), treasury gets remainder.
  */
-export function computePaymentSplit(grossNanoton) {
+export function computePaymentSplit(grossNanoton, options = {}) {
+  const commissionEligible = Boolean(options.commissionEligible);
   const gross = BigInt(grossNanoton);
   const fwdFee = getEstimatedForwardFeeNanoton();
-  const outgoingFees = fwdFee * 2n;
+  const outCount = commissionEligible ? 2n : 1n;
+  const outgoingFees = fwdFee * outCount;
   const executionReserve = EXEC_RESERVE_NANOTON;
   const totalFees = outgoingFees + executionReserve;
 
@@ -102,18 +121,27 @@ export function computePaymentSplit(grossNanoton) {
   }
 
   const distributable = gross - totalFees;
-  const referrerShare = distributable / 2n;
-  const treasuryShare = distributable - referrerShare;
+
+  let referrerShare = 0n;
+  let treasuryShare = distributable;
+  if (commissionEligible) {
+    // floor division; odd nanoton remainder → treasury
+    referrerShare = distributable / 2n;
+    treasuryShare = distributable - referrerShare;
+  }
 
   return {
     grossNanoton: gross,
     executionReserveNanoton: executionReserve,
     outgoingFeesNanoton: outgoingFees,
     forwardFeePerMessageNanoton: fwdFee,
+    outboundMessageCount: Number(outCount),
     distributableNanoton: distributable,
     netAmountNanoton: distributable,
     netNanoton: distributable,
     referrerShareNanoton: referrerShare,
-    treasuryShareNanoton: treasuryShare
+    treasuryShareNanoton: treasuryShare,
+    commissionNanoton: referrerShare,
+    commissionEligible
   };
 }

@@ -151,6 +151,7 @@ function buildSubscribeBody({
   subscriber,
   referrer,
   amount,
+  commission = 0n,
   expiry,
   nonce,
   signerSeed,
@@ -160,6 +161,7 @@ function buildSubscribeBody({
     .storeAddress(subscriber)
     .storeAddress(referrer)
     .storeCoins(amount)
+    .storeCoins(commission)
     .storeUint(expiry, 64)
     .storeUint(nonce, 64)
     .endCell();
@@ -170,6 +172,7 @@ function buildSubscribeBody({
     .storeAddress(subscriber)
     .storeAddress(referrer)
     .storeCoins(amount)
+    .storeCoins(commission)
     .storeUint(expiry, 64)
     .storeUint(nonce, 64)
     .endCell();
@@ -331,11 +334,14 @@ async function main() {
   const paymentId = BigInt('0x' + crypto.randomBytes(32).toString('hex'));
   const expiry = BigInt(Math.floor(Date.now() / 1000) + 3600);
   const nonce = 1n;
+  // First-payment style: ~50% of post-fee distributable (conservative fixed commission)
+  const commission = 40_000_000n;
   const body = buildSubscribeBody({
     paymentId,
     subscriber: deployerWallet.address,
     referrer: referrerWallet.address,
     amount: GROSS_NANOTON,
+    commission,
     expiry,
     nonce,
     signerSeed: secrets.signerPrivateKeyHex,

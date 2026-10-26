@@ -10,6 +10,7 @@ import {
   computePaymentSplit,
   getContractAddress,
   getSubscriptionAmountNanoton,
+  getSubscriptionDurationMs,
   getTreasuryAddress
 } from '../config/tonConfig.js';
 import { buildAuthorizationPayload, isSignerConfigured } from '../services/tonAuthSigner.js';
@@ -19,13 +20,19 @@ import {
   paymentIdToUint256
 } from '../services/tonContractPayload.js';
 import {
+  discoverContractPaymentTx,
   getTestnetExplorerTxUrl,
+  inspectPayoutLegs,
+  looksLikeBocNotHash,
   verifyInboundTonPayment,
   verifyOutboundTonPayout
 } from '../services/tonChainService.js';
 import { requireVerifiedWallet } from '../services/tonProofService.js';
 
 const AUTHORIZATION_TTL_MS = 15 * 60 * 1000;
+const COMMISSION_LOCK_TTL_MS = AUTHORIZATION_TTL_MS + 5 * 60 * 1000;
+
+const OPEN_STATUSES = ['AUTHORIZED', 'SUBMITTED', 'PROCESSING', 'PARTIALLY_SETTLED'];
 
 function serializePayment(payment, extras = {}) {
   return {
@@ -33,12 +40,14 @@ function serializePayment(payment, extras = {}) {
     status: payment.status,
     paymentKind: payment.paymentKind,
     network: payment.network,
+    isFirstPayment: payment.isFirstPayment,
     grossAmountNanoton: payment.grossAmountNanoton,
     executionReserveNanoton: payment.executionReserveNanoton,
     outgoingFeesNanoton: payment.outgoingFeesNanoton,
     netAmountNanoton: payment.netAmountNanoton,
     referrerShareNanoton: payment.referrerShareNanoton,
     treasuryShareNanoton: payment.treasuryShareNanoton,
+    commissionNanoton: payment.referrerShareNanoton || '0',
     subscriberWallet: payment.subscriberWallet,
     referrerWallet: payment.referrerWallet,
     treasuryWallet: payment.treasuryWallet,
@@ -54,7 +63,10 @@ function serializePayment(payment, extras = {}) {
     splitVersion: payment.splitVersion,
     expiresAt: payment.expiresAt,
     failureReason: payment.failureReason,
+    settlementNotes: payment.settlementNotes,
     confirmedAt: payment.confirmedAt,
+    subscriptionStartsAt: payment.subscriptionStartsAt,
+    subscriptionExpiresAt: payment.subscriptionExpiresAt,
     createdAt: payment.createdAt,
     updatedAt: payment.updatedAt,
     explorerUrls: {
@@ -68,6 +80,90 @@ function serializePayment(payment, extras = {}) {
     },
     ...extras
   };
+}
+
+function economicRuleFor(commissionEligible) {
+  if (commissionEligible) {
+    return 'First successful payment only: after fees, 50% of distributable goes to the verified referrer and 50% to treasury (odd nanotons → treasury).';
+  }
+  return 'Renewal or no eligible referrer: after fees, 100% of distributable goes to treasury. Commission is not paid again.';
+}
+
+/**
+ * Eligibility is consumed only on CONFIRMED with commission > 0.
+ * Failed / expired intents release the lock and do not consume eligibility.
+ * Concurrent intents: atomic lock on User.tonFirstCommissionLockPaymentId.
+ */
+async function resolveCommissionEligibility(subscriber, referrerWallet) {
+  if (!referrerWallet) {
+    return { commissionEligible: false, isFirstPayment: false, reason: 'no_verified_referrer' };
+  }
+
+  if (subscriber.tonFirstCommissionConsumed) {
+    return { commissionEligible: false, isFirstPayment: false, reason: 'first_commission_consumed' };
+  }
+
+  const confirmedCount = await Payment.countDocuments({
+    userId: String(subscriber.telegramId),
+    paymentKind: 'TON_SUBSCRIPTION',
+    status: 'CONFIRMED'
+  });
+  if (confirmedCount > 0) {
+    return { commissionEligible: false, isFirstPayment: false, reason: 'prior_confirmed_payment' };
+  }
+
+  const lockExpiredBefore = new Date(Date.now() - COMMISSION_LOCK_TTL_MS);
+  if (
+    subscriber.tonFirstCommissionLockPaymentId &&
+    subscriber.tonFirstCommissionLockAt &&
+    subscriber.tonFirstCommissionLockAt > lockExpiredBefore
+  ) {
+    const lockedPayment = await Payment.findById(subscriber.tonFirstCommissionLockPaymentId);
+    if (lockedPayment && OPEN_STATUSES.includes(lockedPayment.status)) {
+      return {
+        commissionEligible: false,
+        isFirstPayment: true,
+        reason: 'first_commission_locked_by_open_intent',
+        lockedPaymentId: String(lockedPayment._id)
+      };
+    }
+  }
+
+  return { commissionEligible: true, isFirstPayment: true, reason: 'eligible' };
+}
+
+async function acquireFirstCommissionLock(telegramId, paymentId) {
+  const lockExpiredBefore = new Date(Date.now() - COMMISSION_LOCK_TTL_MS);
+  const updated = await User.findOneAndUpdate(
+    {
+      telegramId: String(telegramId),
+      tonFirstCommissionConsumed: { $ne: true },
+      $or: [
+        { tonFirstCommissionLockPaymentId: null },
+        { tonFirstCommissionLockPaymentId: { $exists: false } },
+        { tonFirstCommissionLockAt: { $lte: lockExpiredBefore } },
+        { tonFirstCommissionLockAt: null }
+      ]
+    },
+    {
+      tonFirstCommissionLockPaymentId: paymentId,
+      tonFirstCommissionLockAt: new Date()
+    },
+    { new: true }
+  );
+  return Boolean(updated);
+}
+
+async function releaseFirstCommissionLock(telegramId, paymentId) {
+  await User.updateOne(
+    {
+      telegramId: String(telegramId),
+      tonFirstCommissionLockPaymentId: paymentId
+    },
+    {
+      $unset: { tonFirstCommissionLockPaymentId: 1, tonFirstCommissionLockAt: 1 }
+    }
+  );
 }
 
 export async function createTonSubscriptionIntent(telegramId) {
@@ -87,10 +183,13 @@ export async function createTonSubscriptionIntent(telegramId) {
   }
 
   const grossNanoton = getSubscriptionAmountNanoton();
-  const split = computePaymentSplit(grossNanoton);
   const treasuryWallet = getTreasuryAddress();
   const contractAddress = getContractAddress();
 
+  const eligibility = await resolveCommissionEligibility(subscriber, referrerWallet);
+  let commissionEligible = eligibility.commissionEligible;
+
+  const split = computePaymentSplit(grossNanoton, { commissionEligible });
   const externalPaymentId = `ton-sub-${crypto.randomUUID()}`;
   const expiresAt = new Date(Date.now() + AUTHORIZATION_TTL_MS);
 
@@ -109,48 +208,40 @@ export async function createTonSubscriptionIntent(telegramId) {
     referrerShareNanoton: split.referrerShareNanoton.toString(),
     treasuryShareNanoton: split.treasuryShareNanoton.toString(),
     subscriberWallet: subscriber.walletAddress,
-    referrerId,
-    referrerWallet,
+    referrerId: commissionEligible ? referrerId : referrerId,
+    referrerWallet: commissionEligible ? referrerWallet : null,
     treasuryWallet,
     contractAddress,
     feePolicyVersion: FEE_POLICY_VERSION,
     splitVersion: SPLIT_VERSION,
     expiresAt,
-    isFirstPayment: false,
+    isFirstPayment: eligibility.isFirstPayment || commissionEligible,
     referrerRewardGranted: false
   });
 
   payment.paymentIdUint256 = paymentIdToUint256(payment._id).toString();
 
-  const priorPayments = await Payment.countDocuments({
-    userId: String(telegramId),
-    paymentKind: 'TON_SUBSCRIPTION',
-    status: 'CONFIRMED'
-  });
-  if (priorPayments === 0) {
-    payment.isFirstPayment = true;
-  }
-
-  if (!referrerWallet) {
-    payment.status = 'AUTHORIZED';
-    payment.failureReason = referrerId
-      ? 'Referrer has no verified wallet; referrer payout omitted'
-      : 'No referrer; treasury receives full net share on-chain';
-    await payment.save();
-    return {
-      payment: serializePayment(payment, {
-        referrerEligible: false,
-        canAuthorizePayout: false,
-        economicRule:
-          'After on-chain execution and forward fees are reserved, the remaining amount is split 50/50 between the verified referrer and YORZA.'
-      })
-    };
+  if (commissionEligible) {
+    const locked = await acquireFirstCommissionLock(telegramId, payment._id);
+    if (!locked) {
+      commissionEligible = false;
+      const renewalSplit = computePaymentSplit(grossNanoton, { commissionEligible: false });
+      payment.executionReserveNanoton = renewalSplit.executionReserveNanoton.toString();
+      payment.outgoingFeesNanoton = renewalSplit.outgoingFeesNanoton.toString();
+      payment.netAmountNanoton = renewalSplit.netAmountNanoton.toString();
+      payment.referrerShareNanoton = '0';
+      payment.treasuryShareNanoton = renewalSplit.treasuryShareNanoton.toString();
+      payment.referrerWallet = null;
+      payment.isFirstPayment = false;
+      payment.settlementNotes = 'Concurrent first-commission lock held by another intent; treating as treasury-only';
+    }
   }
 
   if (!contractAddress) {
     payment.status = 'FAILED';
     payment.failureReason = 'TON_TESTNET_REFERRAL_CONTRACT_ADDRESS is not configured';
     await payment.save();
+    if (commissionEligible) await releaseFirstCommissionLock(telegramId, payment._id);
     throw new Error('TON_TESTNET_REFERRAL_CONTRACT_ADDRESS is not configured');
   }
 
@@ -158,6 +249,7 @@ export async function createTonSubscriptionIntent(telegramId) {
     payment.status = 'FAILED';
     payment.failureReason = 'Server payment signer not configured';
     await payment.save();
+    if (commissionEligible) await releaseFirstCommissionLock(telegramId, payment._id);
     throw new Error('TON_PAYMENT_SIGNER_PRIVATE_KEY is not configured');
   }
 
@@ -170,12 +262,13 @@ export async function createTonSubscriptionIntent(telegramId) {
 
   return {
     payment: serializePayment(payment, {
-      referrerEligible: true,
+      referrerEligible: commissionEligible,
       canAuthorizePayout: true,
+      commissionEligible,
+      eligibilityReason: eligibility.reason,
       estimatedFeesNote:
         'Execution and forward fees are reserved on-chain via RAWRESERVE/GETFORWARDFEE; estimates may differ slightly from actual.',
-      economicRule:
-        'After on-chain execution and forward fees are reserved, the remaining amount is split 50/50 between the verified referrer and YORZA.'
+      economicRule: economicRuleFor(commissionEligible)
     })
   };
 }
@@ -191,27 +284,77 @@ export async function getTonPaymentForUser(paymentId, telegramId) {
   return serializePayment(payment);
 }
 
-export async function submitTonPaymentTx(paymentId, telegramId, inboundTxHash) {
+export async function submitTonPaymentTx(paymentId, telegramId, inboundTxHash, options = {}) {
   const payment = await Payment.findById(paymentId);
   if (!payment || payment.userId !== String(telegramId)) {
     throw new Error('Payment not found');
   }
 
-  if (!['AUTHORIZED', 'SUBMITTED', 'PROCESSING'].includes(payment.status)) {
+  if (!['AUTHORIZED', 'SUBMITTED', 'PROCESSING', 'PARTIALLY_SETTLED'].includes(payment.status)) {
     throw new Error(`Cannot submit payment in status ${payment.status}`);
   }
 
-  if (payment.expiresAt && payment.expiresAt < new Date()) {
+  if (payment.expiresAt && payment.expiresAt < new Date() && payment.status === 'AUTHORIZED') {
     payment.status = 'EXPIRED';
     await payment.save();
+    await releaseFirstCommissionLock(telegramId, payment._id);
     throw new Error('Payment authorization expired');
   }
 
-  payment.inboundTxHash = String(inboundTxHash);
+  const raw = inboundTxHash != null ? String(inboundTxHash) : '';
+  if (looksLikeBocNotHash(raw) || options.inboundBoc) {
+    payment.inboundBoc = options.inboundBoc || raw;
+    // Do not treat BOC as a chain hash — discover later
+    if (!payment.inboundTxHash || looksLikeBocNotHash(payment.inboundTxHash)) {
+      payment.inboundTxHash = null;
+    }
+  } else if (raw) {
+    payment.inboundTxHash = raw;
+  }
+
   payment.status = 'SUBMITTED';
   await payment.save();
 
-  return confirmTonPayment(paymentId, telegramId, { fromSubmit: true });
+  return confirmTonPayment(paymentId, telegramId, { fromSubmit: true, allowPending: true });
+}
+
+async function activateSubscription(payment) {
+  const durationMs = getSubscriptionDurationMs();
+  const user = await User.findOne({ telegramId: payment.userId });
+  if (!user) return null;
+
+  const now = new Date();
+  const base =
+    user.tonSubscriptionExpiresAt && user.tonSubscriptionExpiresAt > now
+      ? user.tonSubscriptionExpiresAt
+      : now;
+  const expiresAt = new Date(base.getTime() + durationMs);
+
+  if (
+    user.tonSubscriptionLastPaymentId &&
+    String(user.tonSubscriptionLastPaymentId) === String(payment._id)
+  ) {
+    payment.subscriptionStartsAt = user.tonSubscriptionActivatedAt || now;
+    payment.subscriptionExpiresAt = user.tonSubscriptionExpiresAt;
+    return user;
+  }
+
+  user.tonSubscriptionActive = true;
+  user.tonSubscriptionActivatedAt = user.tonSubscriptionActivatedAt || now;
+  user.tonSubscriptionExpiresAt = expiresAt;
+  user.tonSubscriptionLastPaymentId = payment._id;
+
+  const commission = BigInt(payment.referrerShareNanoton || '0');
+  if (commission > 0n && payment.isFirstPayment) {
+    user.tonFirstCommissionConsumed = true;
+  }
+  user.tonFirstCommissionLockPaymentId = undefined;
+  user.tonFirstCommissionLockAt = undefined;
+  await user.save();
+
+  payment.subscriptionStartsAt = now;
+  payment.subscriptionExpiresAt = expiresAt;
+  return user;
 }
 
 export async function confirmTonPayment(paymentId, telegramId, options = {}) {
@@ -232,26 +375,78 @@ export async function confirmTonPayment(paymentId, telegramId, options = {}) {
     return { payment: serializePayment(payment), alreadyConfirmed: true };
   }
 
-  if (payment.expiresAt && payment.expiresAt < new Date() && payment.status !== 'SUBMITTED') {
+  if (
+    payment.expiresAt &&
+    payment.expiresAt < new Date() &&
+    !['SUBMITTED', 'PROCESSING', 'PARTIALLY_SETTLED'].includes(payment.status)
+  ) {
     payment.status = 'EXPIRED';
     await payment.save();
+    await releaseFirstCommissionLock(payment.userId, payment._id);
     throw new Error('Payment authorization expired');
   }
 
-  if (!payment.inboundTxHash) {
-    throw new Error('Inbound transaction hash required');
-  }
-
   payment.status = 'PROCESSING';
+  payment.reconciliationAttempts = (payment.reconciliationAttempts || 0) + 1;
   await payment.save();
 
   const recipient = payment.contractAddress || payment.treasuryWallet;
-  const inbound = await verifyInboundTonPayment({
-    txHash: payment.inboundTxHash,
-    expectedRecipient: recipient,
-    expectedSender: payment.subscriberWallet,
-    minValueNanoton: payment.grossAmountNanoton
-  });
+  const needsCommission = BigInt(payment.referrerShareNanoton || '0') > 0n;
+
+  // Resolve real inbound tx (BOC from TON Connect is not a hash).
+  // Never invent a settlement without submit evidence (hash or BOC).
+  let inboundMeta = null;
+  const hasSubmitEvidence = Boolean(
+    payment.inboundBoc ||
+      (payment.inboundTxHash && !looksLikeBocNotHash(payment.inboundTxHash))
+  );
+
+  if (!hasSubmitEvidence) {
+    payment.status = options.allowPending ? 'AUTHORIZED' : 'FAILED';
+    payment.failureReason = 'No submitted transaction evidence (hash or BOC)';
+    payment.settlementNotes =
+      'Frontend success alone never activates subscription; submit a chain tx first.';
+    await payment.save();
+    if (options.allowPending) {
+      return { payment: serializePayment(payment), pending: true };
+    }
+    throw new Error(payment.failureReason);
+  }
+
+  if (!payment.inboundTxHash || looksLikeBocNotHash(payment.inboundTxHash)) {
+    inboundMeta = await discoverContractPaymentTx({
+      contractAddress: recipient,
+      expectedSender: payment.subscriberWallet,
+      minValueNanoton: payment.grossAmountNanoton,
+      exactValueNanoton: payment.grossAmountNanoton,
+      knownTxHash: looksLikeBocNotHash(payment.inboundTxHash) ? null : payment.inboundTxHash
+    });
+    if (inboundMeta.found && inboundMeta.txHash) {
+      payment.inboundTxHash = inboundMeta.txHash;
+      await payment.save();
+    }
+  }
+
+  if (!payment.inboundTxHash || looksLikeBocNotHash(payment.inboundTxHash)) {
+    payment.status = options.allowPending ? 'PROCESSING' : 'FAILED';
+    payment.failureReason = inboundMeta?.reason || 'Inbound transaction not yet visible on-chain';
+    payment.settlementNotes =
+      'Waiting for contract inbound tx. TON Connect BOC alone never activates subscription.';
+    await payment.save();
+    if (options.allowPending) {
+      return { payment: serializePayment(payment), pending: true };
+    }
+    throw new Error(payment.failureReason);
+  }
+
+  const inbound = inboundMeta?.found
+    ? inboundMeta
+    : await verifyInboundTonPayment({
+        txHash: payment.inboundTxHash,
+        expectedRecipient: recipient,
+        expectedSender: payment.subscriberWallet,
+        minValueNanoton: payment.grossAmountNanoton
+      });
 
   if (!inbound.found) {
     payment.status = options.allowPending ? 'PROCESSING' : 'FAILED';
@@ -263,49 +458,97 @@ export async function confirmTonPayment(paymentId, telegramId, options = {}) {
     throw new Error(payment.failureReason);
   }
 
-  let referrerVerified = false;
+  // Auto-attach payout hashes: on TON, outbound messages are on the same contract tx
+  if (!payment.treasuryPayoutTxHash) {
+    payment.treasuryPayoutTxHash = payment.inboundTxHash;
+  }
+  if (needsCommission && payment.referrerWallet && !payment.referrerPayoutTxHash) {
+    payment.referrerPayoutTxHash = payment.inboundTxHash;
+  }
+
+  const outMsgs = inbound.outMsgs || [];
+  let referrerVerified = !needsCommission;
   let treasuryVerified = false;
 
-  if (payment.referrerWallet && payment.referrerPayoutTxHash) {
-    const refOut = await verifyOutboundTonPayout({
-      txHash: payment.referrerPayoutTxHash,
-      expectedSender: recipient,
-      expectedRecipient: payment.referrerWallet,
-      minValueNanoton: payment.referrerShareNanoton
+  if (outMsgs.length > 0) {
+    const legs = inspectPayoutLegs({
+      outMsgs,
+      referrerWallet: payment.referrerWallet,
+      treasuryWallet: payment.treasuryWallet,
+      referrerShareNanoton: payment.referrerShareNanoton,
+      treasuryShareNanoton: payment.treasuryShareNanoton
     });
-    referrerVerified = refOut.found;
-  } else if (!payment.referrerWallet) {
-    referrerVerified = true;
+    if (needsCommission) {
+      referrerVerified = Boolean(legs.referrer);
+    }
+    treasuryVerified = Boolean(legs.treasury);
+    if (legs.bouncedCount > 0) {
+      payment.settlementNotes = `Detected ${legs.bouncedCount} bounced out_msg(s); funds may be locked in contract pending sweep_excess`;
+    }
+  } else {
+    if (needsCommission && payment.referrerWallet && payment.referrerPayoutTxHash) {
+      const refOut = await verifyOutboundTonPayout({
+        txHash: payment.referrerPayoutTxHash,
+        expectedSender: recipient,
+        expectedRecipient: payment.referrerWallet,
+        minValueNanoton: payment.referrerShareNanoton
+      });
+      referrerVerified = refOut.found;
+    }
+    if (payment.treasuryPayoutTxHash) {
+      const treOut = await verifyOutboundTonPayout({
+        txHash: payment.treasuryPayoutTxHash,
+        expectedSender: recipient,
+        expectedRecipient: payment.treasuryWallet,
+        minValueNanoton: payment.treasuryShareNanoton
+      });
+      treasuryVerified = treOut.found;
+    }
   }
 
-  if (payment.treasuryPayoutTxHash) {
-    const treOut = await verifyOutboundTonPayout({
-      txHash: payment.treasuryPayoutTxHash,
-      expectedSender: recipient,
-      expectedRecipient: payment.treasuryWallet,
-      minValueNanoton: payment.treasuryShareNanoton
-    });
-    treasuryVerified = treOut.found;
-  } else {
-    treasuryVerified = false;
+  // Mock chain path: when TON_CHAIN_MOCK and mock hashes, trust verifyOutbound helpers
+  if (process.env.TON_CHAIN_MOCK === 'true' && String(payment.inboundTxHash).startsWith('mock-')) {
+    if (needsCommission && payment.referrerPayoutTxHash) {
+      const refOut = await verifyOutboundTonPayout({
+        txHash: payment.referrerPayoutTxHash,
+        expectedSender: recipient,
+        expectedRecipient: payment.referrerWallet,
+        minValueNanoton: payment.referrerShareNanoton
+      });
+      referrerVerified = refOut.found;
+    } else if (!needsCommission) {
+      referrerVerified = true;
+    }
+    if (payment.treasuryPayoutTxHash) {
+      const treOut = await verifyOutboundTonPayout({
+        txHash: payment.treasuryPayoutTxHash,
+        expectedSender: recipient,
+        expectedRecipient: payment.treasuryWallet,
+        minValueNanoton: payment.treasuryShareNanoton
+      });
+      treasuryVerified = treOut.found;
+    }
   }
+
+  await payment.save();
 
   if (referrerVerified && treasuryVerified) {
     payment.status = 'CONFIRMED';
     payment.confirmedAt = new Date();
     payment.failureReason = null;
+    await activateSubscription(payment);
     await payment.save();
-    await recordTonReferralPayoutIfNeeded(payment);
+    if (needsCommission) {
+      await recordTonReferralPayoutIfNeeded(payment);
+    }
     return { payment: serializePayment(payment), confirmed: true };
   }
 
   if (referrerVerified || treasuryVerified) {
     payment.status = 'PARTIALLY_SETTLED';
-    payment.failureReason = 'One or more outbound payouts not yet verified on-chain';
+    payment.failureReason = 'One or more outbound payouts not yet verified on-chain (or bounced)';
     await payment.save();
-    if (referrerVerified) {
-      await recordTonReferralPayoutIfNeeded(payment);
-    }
+    // Do NOT grant referral ledger or activate subscription on partial settlement
     return { payment: serializePayment(payment), partiallySettled: true };
   }
 
@@ -317,6 +560,8 @@ export async function confirmTonPayment(paymentId, telegramId, options = {}) {
 
 async function recordTonReferralPayoutIfNeeded(payment) {
   if (!payment.referrerWallet || !payment.referrerShareNanoton || !payment.referrerId) return null;
+  if (BigInt(payment.referrerShareNanoton) <= 0n) return null;
+  if (payment.status !== 'CONFIRMED') return null;
 
   const existing = await ReferralTonPayout.findOne({ paymentId: payment._id });
   if (existing?.status === 'CONFIRMED') return existing;
@@ -349,11 +594,9 @@ async function recordTonReferralPayoutIfNeeded(payment) {
       await referrer.save();
     }
     payment.referrerRewardGranted = true;
-  } else if (payout.status !== 'CONFIRMED') {
-    payment.referrerRewardGranted = false;
+    await payment.save();
   }
 
-  await payment.save();
   return payout;
 }
 
@@ -378,14 +621,30 @@ export async function getTonPaymentHistory(telegramId) {
   const asSubscriber = await Payment.find({
     userId: String(telegramId),
     paymentKind: 'TON_SUBSCRIPTION'
-  }).sort({ createdAt: -1 }).limit(50);
+  })
+    .sort({ createdAt: -1 })
+    .limit(50);
 
   const payouts = await ReferralTonPayout.find({ referrerId: String(telegramId) })
     .populate('paymentId')
     .sort({ createdAt: -1 })
     .limit(50);
 
+  const user = await User.findOne({ telegramId: String(telegramId) });
+
   return {
+    subscription: user
+      ? {
+          active: Boolean(
+            user.tonSubscriptionActive &&
+              user.tonSubscriptionExpiresAt &&
+              new Date(user.tonSubscriptionExpiresAt) > new Date()
+          ),
+          expiresAt: user.tonSubscriptionExpiresAt || null,
+          activatedAt: user.tonSubscriptionActivatedAt || null,
+          firstCommissionConsumed: Boolean(user.tonFirstCommissionConsumed)
+        }
+      : null,
     subscriptions: asSubscriber.map((p) => serializePayment(p)),
     referralTonPayouts: payouts.map((p) => ({
       id: p._id,
@@ -402,10 +661,31 @@ export async function getTonPaymentHistory(telegramId) {
   };
 }
 
-export async function getTonSubscriptionQuote() {
+export async function getTonSubscriptionQuote(telegramId) {
   assertTestnetOnly(TON_NETWORK);
   const grossNanoton = getSubscriptionAmountNanoton();
-  const split = computePaymentSplit(grossNanoton);
+
+  let commissionEligible = false;
+  if (telegramId) {
+    try {
+      const subscriber = await User.findOne({ telegramId: String(telegramId) });
+      let referrerWallet = null;
+      if (subscriber?.referrerId) {
+        const referrer = await User.findOne({ telegramId: subscriber.referrerId });
+        if (referrer?.walletVerified && referrer.walletAddress) {
+          referrerWallet = referrer.walletAddress;
+        }
+      }
+      if (subscriber) {
+        const eligibility = await resolveCommissionEligibility(subscriber, referrerWallet);
+        commissionEligible = eligibility.commissionEligible;
+      }
+    } catch {
+      commissionEligible = false;
+    }
+  }
+
+  const split = computePaymentSplit(grossNanoton, { commissionEligible });
 
   return {
     network: TON_NETWORK,
@@ -419,13 +699,14 @@ export async function getTonSubscriptionQuote() {
     estimatedNetTon: Number(split.netAmountNanoton) / 1e9,
     estimatedReferrerShareNanoton: split.referrerShareNanoton.toString(),
     estimatedTreasuryShareNanoton: split.treasuryShareNanoton.toString(),
+    commissionEligible,
+    subscriptionDurationDays: Number(process.env.TON_SUBSCRIPTION_DURATION_DAYS || 30),
     feePolicyVersion: FEE_POLICY_VERSION,
     splitVersion: SPLIT_VERSION,
     feePolicy:
-      'On-chain router reserves execution gas (RAWRESERVE) and two forward fees (GETFORWARDFEE), then splits remainder 50/50. Odd nanotons go to treasury.',
+      'On-chain V3 router reserves execution gas (RAWRESERVE) and forward fees (GETFORWARDFEE × outbound count), then routes commission (if any) and remainder to treasury. Odd nanotons → treasury on 50/50.',
     contractAddress: getContractAddress(),
     treasuryAddress: process.env.TON_TESTNET_TREASURY_ADDRESS || null,
-    economicRule:
-      'After on-chain execution and forward fees are reserved, the remaining amount is split 50/50 between the verified referrer and YORZA.'
+    economicRule: economicRuleFor(commissionEligible)
   };
 }

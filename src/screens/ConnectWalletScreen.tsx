@@ -25,17 +25,23 @@ interface ConnectWalletScreenProps {
 type PaymentRecord = {
   id: string
   status: string
+  isFirstPayment?: boolean
+  commissionEligible?: boolean
   grossAmountNanoton?: string
   executionReserveNanoton?: string
   outgoingFeesNanoton?: string
   netAmountNanoton?: string
   referrerShareNanoton?: string
   treasuryShareNanoton?: string
+  commissionNanoton?: string
   contractAddress?: string | null
   contractPayloadBoc?: string | null
   inboundTxHash?: string | null
   referrerPayoutTxHash?: string | null
   treasuryPayoutTxHash?: string | null
+  subscriptionExpiresAt?: string | null
+  failureReason?: string | null
+  settlementNotes?: string | null
   authorizationPayload?: Record<string, unknown>
   economicRule?: string
   estimatedFeesNote?: string
@@ -45,6 +51,8 @@ type PaymentRecord = {
     treasuryPayout?: string | null
   }
 }
+
+const TERMINAL_STATUSES = new Set(['CONFIRMED', 'FAILED', 'EXPIRED'])
 
 const ConnectWalletScreen: React.FC<ConnectWalletScreenProps> = ({
   gameState,
@@ -61,8 +69,10 @@ const ConnectWalletScreen: React.FC<ConnectWalletScreenProps> = ({
   const [quote, setQuote] = useState<any>(null)
   const [activePayment, setActivePayment] = useState<PaymentRecord | null>(null)
   const [paymentBusy, setPaymentBusy] = useState(false)
+  const [pollNote, setPollNote] = useState<string | null>(null)
 
   const connected = !!address && !!wallet
+  const subscriptionActive = Boolean(gameState.tonSubscription?.active)
 
   useEffect(() => {
     if (connected && address) {
@@ -176,6 +186,40 @@ const ConnectWalletScreen: React.FC<ConnectWalletScreenProps> = ({
     }
   }
 
+  const pollUntilSettled = useCallback(
+    async (paymentId: string) => {
+      setPollNote('Waiting for backend on-chain verification…')
+      for (let i = 0; i < 24; i++) {
+        await new Promise((r) => setTimeout(r, 2500))
+        try {
+          const result = await apiService.confirmPayment(paymentId)
+          const payment = (result.payment || result) as PaymentRecord
+          setActivePayment(payment)
+          if (TERMINAL_STATUSES.has(payment.status)) {
+            setPollNote(
+              payment.status === 'CONFIRMED'
+                ? 'Subscription activated after verified settlement.'
+                : payment.failureReason || payment.status
+            )
+            return payment
+          }
+          if (payment.status === 'PARTIALLY_SETTLED') {
+            setPollNote(
+              'Partially settled — not active until treasury (and commission) payouts verify.'
+            )
+          } else {
+            setPollNote(`Status: ${payment.status} (poll ${i + 1}/24)`)
+          }
+        } catch (err: any) {
+          setPollNote(err?.message || 'Confirm poll error')
+        }
+      }
+      setPollNote('Still pending — reopen later; activation only after backend confirms.')
+      return null
+    },
+    []
+  )
+
   const handleSubscribe = async () => {
     if (!walletVerified) {
       showAlert('Verify your wallet before subscribing.')
@@ -184,6 +228,7 @@ const ConnectWalletScreen: React.FC<ConnectWalletScreenProps> = ({
 
     try {
       setPaymentBusy(true)
+      setPollNote(null)
       const intent = await apiService.createPaymentIntent()
       const payment = intent.payment as PaymentRecord
       setActivePayment(payment)
@@ -213,14 +258,31 @@ const ConnectWalletScreen: React.FC<ConnectWalletScreenProps> = ({
         ],
       })
 
-      const inboundHash = tx.boc
-      const submit = await apiService.submitPaymentTx(payment.id, inboundHash)
-      setActivePayment(submit.payment)
+      // TON Connect returns a BOC, not a chain tx hash — never treat BOC as activation proof
+      const boc = tx.boc
+      const submit = await apiService.submitPaymentTx(payment.id, boc, { inboundBoc: boc })
+      setActivePayment(submit.payment as PaymentRecord)
       hapticFeedback('light')
-      showAlert('Payment submitted — verifying on testnet…')
+
+      if ((submit.payment as PaymentRecord)?.status === 'CONFIRMED') {
+        showAlert('Subscription active — settlement verified by backend.')
+        setPollNote('Subscription activated after verified settlement.')
+      } else {
+        showAlert('Payment submitted — confirming on testnet. Access stays inactive until verified.')
+        await pollUntilSettled(payment.id)
+      }
     } catch (error: any) {
       console.error('Subscribe failed:', error)
-      showAlert(error?.message || 'Subscription payment failed')
+      const msg = error?.message || 'Subscription payment failed'
+      if (/reject|cancel|declined/i.test(msg)) {
+        showAlert('Wallet rejected the transaction. No payment was made.')
+      } else if (/insufficient|balance/i.test(msg)) {
+        showAlert('Insufficient testnet TON. Fund the wallet from a testnet faucet.')
+      } else if (/expired/i.test(msg)) {
+        showAlert('Authorization expired. Create a new payment intent and try again.')
+      } else {
+        showAlert(msg)
+      }
     } finally {
       setPaymentBusy(false)
     }
@@ -342,9 +404,26 @@ const ConnectWalletScreen: React.FC<ConnectWalletScreenProps> = ({
         </motion.div>
       )}
 
+      {subscriptionActive && (
+        <div className="tg-card p-4 mb-6 border border-green-200 bg-green-50">
+          <h3 className="text-lg font-semibold text-green-900 mb-1">Subscription active</h3>
+          <p className="text-sm text-green-800">
+            Expires{' '}
+            {gameState.tonSubscription?.expiresAt
+              ? new Date(gameState.tonSubscription.expiresAt).toLocaleString()
+              : '—'}
+          </p>
+          <p className="text-xs text-green-700 mt-1">
+            Status comes from the backend after on-chain settlement — not from the wallet approval.
+          </p>
+        </div>
+      )}
+
       {quote && (
         <div className="tg-card p-4 mb-6">
-          <h3 className="text-lg font-semibold text-gray-800 mb-3">Testnet Subscription</h3>
+          <h3 className="text-lg font-semibold text-gray-800 mb-3">
+            {subscriptionActive ? 'Renew Testnet Subscription' : 'Testnet Subscription'}
+          </h3>
           <p className="text-xs text-gray-500 mb-3">{quote.economicRule}</p>
           <div className="grid grid-cols-2 gap-2 text-sm mb-4">
             <div className="p-2 bg-gray-50 rounded">
@@ -356,7 +435,7 @@ const ConnectWalletScreen: React.FC<ConnectWalletScreenProps> = ({
               <div className="font-semibold">{quote.executionReserveTon} TON</div>
             </div>
             <div className="p-2 bg-gray-50 rounded">
-              <div className="text-gray-500 text-xs">Est. forward fees (2×)</div>
+              <div className="text-gray-500 text-xs">Est. forward fees</div>
               <div className="font-semibold">{quote.outgoingFeesTon} TON</div>
             </div>
             <div className="p-2 bg-gray-50 rounded">
@@ -364,8 +443,14 @@ const ConnectWalletScreen: React.FC<ConnectWalletScreenProps> = ({
               <div className="font-semibold">{quote.estimatedNetTon} TON</div>
             </div>
             <div className="p-2 bg-gray-50 rounded">
-              <div className="text-gray-500 text-xs">Referrer share (50% net)</div>
+              <div className="text-gray-500 text-xs">
+                {quote.commissionEligible ? 'Referrer share (first only)' : 'Referrer share'}
+              </div>
               <div className="font-semibold">{formatTon(quote.estimatedReferrerShareNanoton)}</div>
+            </div>
+            <div className="p-2 bg-gray-50 rounded">
+              <div className="text-gray-500 text-xs">Treasury share</div>
+              <div className="font-semibold">{formatTon(quote.estimatedTreasuryShareNanoton)}</div>
             </div>
           </div>
           <p className="text-xs text-gray-500 mb-3">{quote.feePolicy}</p>
@@ -376,8 +461,10 @@ const ConnectWalletScreen: React.FC<ConnectWalletScreenProps> = ({
           >
             {paymentBusy ? (
               <>
-                <Loader2 className="w-4 h-4 animate-spin" /> Processing…
+                <Loader2 className="w-4 h-4 animate-spin" /> Confirming on-chain…
               </>
+            ) : subscriptionActive ? (
+              'Renew on Testnet'
             ) : (
               'Pay Testnet Subscription'
             )}
@@ -391,16 +478,21 @@ const ConnectWalletScreen: React.FC<ConnectWalletScreenProps> = ({
           <div className="text-sm space-y-2">
             <p>
               Status: <span className="font-medium">{activePayment.status}</span>
+              {activePayment.status === 'CONFIRMED' ? ' — access granted' : ' — access not granted yet'}
             </p>
+            {pollNote && <p className="text-xs text-amber-800">{pollNote}</p>}
             <p>Gross: {formatTon(activePayment.grossAmountNanoton)}</p>
             <p>Execution reserve (est.): {formatTon(activePayment.executionReserveNanoton)}</p>
             <p>Forward fees (est.): {formatTon(activePayment.outgoingFeesNanoton)}</p>
             <p>Net (distributable est.): {formatTon(activePayment.netAmountNanoton)}</p>
-            <p>Referrer payout (50% net): {formatTon(activePayment.referrerShareNanoton)}</p>
+            <p>Referrer commission: {formatTon(activePayment.referrerShareNanoton)}</p>
             <p>Treasury share: {formatTon(activePayment.treasuryShareNanoton)}</p>
+            {activePayment.subscriptionExpiresAt && (
+              <p>Subscription expires: {new Date(activePayment.subscriptionExpiresAt).toLocaleString()}</p>
+            )}
             {activePayment.status === 'PARTIALLY_SETTLED' && (
               <p className="text-amber-700 text-xs">
-                Partially settled — not all outbound payouts confirmed on-chain yet.
+                Partially settled — subscription stays inactive until full payout verification.
               </p>
             )}
             {activePayment.inboundTxHash && (

@@ -25,6 +25,8 @@ function loadCompiledCode() {
 }
 
 function addrKey(address) {
+  if (!address) return '';
+  if (typeof address === 'string') return address;
   return address.toRawString();
 }
 
@@ -41,6 +43,7 @@ function buildSubscribeBody({
   subscriber,
   referrer,
   amount,
+  commission,
   expiry,
   nonce,
   signerSeed
@@ -50,6 +53,7 @@ function buildSubscribeBody({
     .storeAddress(subscriber)
     .storeAddress(referrer)
     .storeCoins(amount)
+    .storeCoins(commission)
     .storeUint(expiry, 64)
     .storeUint(nonce, 64)
     .endCell();
@@ -60,6 +64,7 @@ function buildSubscribeBody({
     .storeAddress(subscriber)
     .storeAddress(referrer)
     .storeCoins(amount)
+    .storeCoins(commission)
     .storeUint(expiry, 64)
     .storeUint(nonce, 64)
     .endCell();
@@ -72,7 +77,15 @@ function buildSubscribeBody({
     .endCell();
 }
 
-describe('ReferralPayment router (sandbox)', () => {
+/** Approximate 50% commission after fees for sandbox (actual fwd fees from chain config). */
+function approxHalfCommission(gross) {
+  const exec = 7_500_000n;
+  const fwdEstimate = 10_000_000n; // generous upper bound for two msgs in sandbox
+  const dist = gross - exec - fwdEstimate;
+  return dist > 0n ? dist / 2n : 0n;
+}
+
+describe('ReferralPayment V3 router (sandbox)', () => {
   let code;
   let blockchain;
   let treasury;
@@ -110,21 +123,30 @@ describe('ReferralPayment router (sandbox)', () => {
       init: { code, data: initData },
       bounce: false
     });
-    const deployed = deployResult.transactions.some((tx) => tx.description?.deploy);
+    const contractKey = addrKey(contract.address);
+    const deployed = deployResult.transactions.some(
+      (tx) =>
+        addrKey(tx.inMessage?.info?.dest) === contractKey &&
+        tx.description?.computePhase?.success
+    );
     assert.ok(deployed, 'ReferralPayment router should deploy in sandbox');
   });
 
-  it('splits 50/50 after reserving execution and forward fees', async () => {
+  it('first payment: routes signed commission to referrer and remainder to treasury', async () => {
     const gross = toNano('0.1');
     const paymentId = BigInt('0x' + crypto.randomBytes(32).toString('hex'));
     const expiry = BigInt(Math.floor(Date.now() / 1000) + 3600);
     const nonce = 1n;
+
+    // Use a small fixed commission that fits after real sandbox fees
+    const commission = 20_000_000n;
 
     const body = buildSubscribeBody({
       paymentId,
       subscriber: subscriber.address,
       referrer: referrer.address,
       amount: gross,
+      commission,
       expiry,
       nonce,
       signerSeed
@@ -149,7 +171,7 @@ describe('ReferralPayment router (sandbox)', () => {
         tx.description?.computePhase?.success &&
         tx.outMessagesCount >= 2
     );
-    assert.ok(contractTx, 'subscribe transaction should succeed');
+    assert.ok(contractTx, 'subscribe transaction should succeed with 2 outs');
 
     const payoutTxs = result.transactions.filter(
       (tx) =>
@@ -162,13 +184,56 @@ describe('ReferralPayment router (sandbox)', () => {
 
     const refPayout = payoutTxs.find((tx) => addrKey(tx.inMessage?.info?.dest) === referrerKey);
     const trePayout = payoutTxs.find((tx) => addrKey(tx.inMessage?.info?.dest) === treasuryKey);
-    const refValue = refPayout.inMessage.info.value.coins;
-    const treValue = trePayout.inMessage.info.value.coins;
+    assert.equal(refPayout.inMessage.info.value.coins, commission);
+    assert.ok(trePayout.inMessage.info.value.coins > 0n);
+  });
 
-    assert.ok(refValue > 0n);
-    assert.ok(treValue > 0n);
-    assert.ok(treValue >= refValue);
-    assert.equal(refValue + treValue + (gross - refValue - treValue), gross);
+  it('renewal / zero commission: full distributable to treasury only', async () => {
+    const gross = toNano('0.1');
+    const paymentId = BigInt('0x' + crypto.randomBytes(32).toString('hex'));
+    const body = buildSubscribeBody({
+      paymentId,
+      subscriber: subscriber.address,
+      referrer: treasury.address,
+      amount: gross,
+      commission: 0n,
+      expiry: BigInt(Math.floor(Date.now() / 1000) + 3600),
+      nonce: 10n,
+      signerSeed
+    });
+
+    const result = await subscriber.send({
+      to: contract.address,
+      value: gross,
+      body,
+      bounce: true
+    });
+
+    const contractKey = addrKey(contract.address);
+    const treasuryKey = addrKey(treasury.address);
+    const referrerKey = addrKey(referrer.address);
+
+    const contractTx = result.transactions.find(
+      (tx) =>
+        addrKey(tx.inMessage?.info?.dest) === contractKey &&
+        tx.description?.computePhase?.success
+    );
+    assert.ok(contractTx);
+    assert.equal(contractTx.outMessagesCount, 1, 'treasury-only should emit one outbound');
+
+    const toReferrer = result.transactions.some(
+      (tx) =>
+        addrKey(tx.inMessage?.info?.src) === contractKey &&
+        addrKey(tx.inMessage?.info?.dest) === referrerKey
+    );
+    assert.equal(toReferrer, false);
+
+    const toTreasury = result.transactions.some(
+      (tx) =>
+        addrKey(tx.inMessage?.info?.src) === contractKey &&
+        addrKey(tx.inMessage?.info?.dest) === treasuryKey
+    );
+    assert.ok(toTreasury);
   });
 
   it('rejects duplicate payment_id (replay)', async () => {
@@ -181,6 +246,7 @@ describe('ReferralPayment router (sandbox)', () => {
       subscriber: subscriber.address,
       referrer: referrer.address,
       amount: gross,
+      commission: 10_000_000n,
       expiry,
       nonce,
       signerSeed
@@ -200,6 +266,7 @@ describe('ReferralPayment router (sandbox)', () => {
       subscriber: subscriber.address,
       referrer: referrer.address,
       amount: gross,
+      commission: 10_000_000n,
       expiry: BigInt(Math.floor(Date.now() / 1000) + 3600),
       nonce: 3n,
       signerSeed
@@ -208,6 +275,30 @@ describe('ReferralPayment router (sandbox)', () => {
     const result = await subscriber.send({
       to: contract.address,
       value: toNano('0.05'),
+      body,
+      bounce: true
+    });
+    const bounced = result.transactions.some((tx) => tx.description?.aborted);
+    assert.ok(bounced);
+  });
+
+  it('rejects commission greater than distributable', async () => {
+    const gross = toNano('0.1');
+    const paymentId = BigInt('0x' + crypto.randomBytes(32).toString('hex'));
+    const body = buildSubscribeBody({
+      paymentId,
+      subscriber: subscriber.address,
+      referrer: referrer.address,
+      amount: gross,
+      commission: gross,
+      expiry: BigInt(Math.floor(Date.now() / 1000) + 3600),
+      nonce: 4n,
+      signerSeed
+    });
+
+    const result = await subscriber.send({
+      to: contract.address,
+      value: gross,
       body,
       bounce: true
     });
