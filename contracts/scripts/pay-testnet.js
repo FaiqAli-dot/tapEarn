@@ -160,29 +160,51 @@ function loadSecretsFromEnv({ requireTreasuryMnemonic = false } = {}) {
   };
 }
 
-/** Match backend/src/services/tonContractPayload.js — buildAuthCell */
-function buildAuthCell({ paymentId, subscriber, referrer, amount, expiry, nonce }) {
+/** Match backend V3 tonContractPayload — auth binds commission */
+function buildAuthCell({ paymentId, subscriber, referrer, amount, commission, expiry, nonce }) {
   return beginCell()
     .storeUint(paymentId, 256)
     .storeAddress(subscriber)
     .storeAddress(referrer)
     .storeCoins(amount)
+    .storeCoins(commission ?? 0n)
     .storeUint(expiry, 64)
     .storeUint(nonce, 64)
     .endCell();
 }
 
-/** Match backend/src/services/tonContractPayload.js — buildSubscribeMessageBody */
-function buildSubscribeBody({ paymentId, subscriber, referrer, amount, expiry, nonce, signerSeed }) {
-  const authCell = buildAuthCell({ paymentId, subscriber, referrer, amount, expiry, nonce });
+/** Match backend V3 tonContractPayload — buildSubscribeMessageBody */
+function buildSubscribeBody({
+  paymentId,
+  subscriber,
+  referrer,
+  amount,
+  commission = 0n,
+  expiry,
+  nonce,
+  signerSeed,
+}) {
+  const authCell = buildAuthCell({
+    paymentId,
+    subscriber,
+    referrer,
+    amount,
+    commission,
+    expiry,
+    nonce,
+  });
   const seed = Buffer.from(signerSeed, 'hex');
-  const sig = sign(authCell.hash(), keyPairFromSeed(seed.length === 64 ? seed.subarray(0, 32) : seed).secretKey);
+  const sig = sign(
+    authCell.hash(),
+    keyPairFromSeed(seed.length === 64 ? seed.subarray(0, 32) : seed).secretKey
+  );
 
   const authPart = beginCell()
     .storeUint(paymentId, 256)
     .storeAddress(subscriber)
     .storeAddress(referrer)
     .storeCoins(amount)
+    .storeCoins(commission)
     .storeUint(expiry, 64)
     .storeUint(nonce, 64)
     .endCell();
@@ -341,11 +363,13 @@ async function runSplitProof() {
   const paymentId = BigInt('0x' + crypto.randomBytes(32).toString('hex'));
   const nonce = BigInt(crypto.randomBytes(8).readBigUInt64BE(0));
   const expiry = BigInt(Math.floor(Date.now() / 1000) + 3600);
+  const commission = 40_000_000n;
   const body = buildSubscribeBody({
     paymentId,
     subscriber: deployerWallet.address,
     referrer: referrerWallet.address,
     amount: GROSS_NANOTON,
+    commission,
     expiry,
     nonce,
     signerSeed: secrets.signerPrivateKeyHex,
@@ -504,11 +528,13 @@ async function main() {
   }
 
   const expiry = BigInt(Math.floor(Date.now() / 1000) + 3600);
+  const commission = replayMode ? 40_000_000n : 40_000_000n;
   const body = buildSubscribeBody({
     paymentId,
     subscriber: deployerWallet.address,
     referrer: referrerAddress,
     amount: GROSS_NANOTON,
+    commission,
     expiry,
     nonce,
     signerSeed: secrets.signerPrivateKeyHex,

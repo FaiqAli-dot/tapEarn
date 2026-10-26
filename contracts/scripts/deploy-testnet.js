@@ -151,6 +151,7 @@ function buildSubscribeBody({
   subscriber,
   referrer,
   amount,
+  commission = 0n,
   expiry,
   nonce,
   signerSeed,
@@ -160,6 +161,7 @@ function buildSubscribeBody({
     .storeAddress(subscriber)
     .storeAddress(referrer)
     .storeCoins(amount)
+    .storeCoins(commission)
     .storeUint(expiry, 64)
     .storeUint(nonce, 64)
     .endCell();
@@ -170,6 +172,7 @@ function buildSubscribeBody({
     .storeAddress(subscriber)
     .storeAddress(referrer)
     .storeCoins(amount)
+    .storeCoins(commission)
     .storeUint(expiry, 64)
     .storeUint(nonce, 64)
     .endCell();
@@ -271,10 +274,12 @@ async function main() {
   const contractAddr = contractAddress(0, { code, data: initData });
   const contractStr = contractAddr.toString({ bounceable: false, testOnly: true });
 
+  const localCodeHash = code.hash().toString('hex');
+  log(`Local code hash: ${localCodeHash}`);
   log(`Contract address (predicted): ${contractStr}`);
 
   if (!(await isContractDeployed(contractStr))) {
-    log('Deploying V2 router...');
+    log('Deploying V3.1 fee-aware router...');
     await sendExternalBoc(
       deployerWallet,
       deployerKey.secretKey,
@@ -296,91 +301,121 @@ async function main() {
     log('Contract already active');
   }
 
-  const txs = await toncenter('getTransactions', { address: contractStr, limit: 3 });
-  const deployTxHash = txs?.[0]?.transaction_id?.hash || null;
+  // Prefer the oldest recent tx as deploy when contract was just created
+  const txs = await toncenter('getTransactions', { address: contractStr, limit: 5 });
+  let deployTxHash = null;
+  for (const tx of [...(txs || [])].reverse()) {
+    if (!tx.in_msg?.source || Number(tx.in_msg?.value || 0) > 0) {
+      deployTxHash = tx.transaction_id?.hash || deployTxHash;
+      break;
+    }
+  }
+  if (!deployTxHash) deployTxHash = txs?.[txs.length - 1]?.transaction_id?.hash || txs?.[0]?.transaction_id?.hash || null;
+
+  // Verify on-chain code hash matches local build
+  let onchainCodeHash = null;
+  let codeMatchesBuild = false;
+  try {
+    const state = await toncenterGet('getAddressInformation', { address: contractStr });
+    const codeBoc = state?.code;
+    if (codeBoc) {
+      const onchainCode = Cell.fromBoc(Buffer.from(codeBoc, 'base64'))[0];
+      onchainCodeHash = onchainCode.hash().toString('hex');
+      codeMatchesBuild = onchainCodeHash === localCodeHash;
+    }
+  } catch (e) {
+    log(`Code hash verify warning: ${e.message}`);
+  }
+  log(`On-chain code hash: ${onchainCodeHash}`);
+  log(`Code matches build: ${codeMatchesBuild}`);
+  if (!codeMatchesBuild) {
+    throw new Error(`Deployed code hash mismatch: local=${localCodeHash} onchain=${onchainCodeHash}`);
+  }
 
   // Create throwaway referrer wallet for live payment test
   const { mnemonicNew } = await import('@ton/crypto');
   const referrerMnemonic = await mnemonicNew(24);
   const referrerKey = await mnemonicToPrivateKey(referrerMnemonic);
   const referrerWallet = WalletContractV4.create({ workchain: 0, publicKey: referrerKey.publicKey });
-  const referrerAddress = referrerWallet.address.toString({ bounceable: false, testOnly: true });
 
-  if (balance < GROSS_NANOTON + 80_000_000n) {
-    const report = {
-      status: 'DEPLOYED_PAYMENT_BLOCKED',
-      network: 'testnet',
-      contractAddress: contractStr,
-      deployTxHash,
-      treasuryAddress: treasuryAddr,
-      signerPublicKeyHex: secrets.signerPublicKeyHex,
-      deployerAddress: deployerAddr,
-      deployerBalanceNanoton: balance.toString(),
-      note: 'Contract deployed but deployer balance insufficient for 0.1 TON live payment test',
-      explorers: {
-        contract: explorerAddr(contractStr),
-        deployer: explorerAddr(deployerAddr),
-        treasury: explorerAddr(treasuryAddr),
-      },
-    };
-    writeFileSync(REPORT_PATH, JSON.stringify(report, null, 2));
-    console.log(JSON.stringify(report, null, 2));
-    return;
-  }
+  // Optional smoke payment (V3.1: commission>0 is eligibility; payout is 50/50 of net).
+  // Uses an uninitialized throwaway referrer so the referrer leg bounces — leaves excess for sweep_excess.
+  const skipSmoke = process.env.TON_DEPLOY_SKIP_SMOKE === '1';
+  let paymentTest = null;
+  balance = await getBalanceNano(deployerAddr);
+  if (!skipSmoke && balance >= GROSS_NANOTON + 40_000_000n) {
+    const paymentId = BigInt('0x' + crypto.randomBytes(32).toString('hex'));
+    const expiry = BigInt(Math.floor(Date.now() / 1000) + 3600);
+    const nonce = 1n;
+    const commission = 1n; // eligibility flag only
+    const body = buildSubscribeBody({
+      paymentId,
+      subscriber: deployerWallet.address,
+      referrer: referrerWallet.address,
+      amount: GROSS_NANOTON,
+      commission,
+      expiry,
+      nonce,
+      signerSeed: secrets.signerPrivateKeyHex,
+    });
 
-  const paymentId = BigInt('0x' + crypto.randomBytes(32).toString('hex'));
-  const expiry = BigInt(Math.floor(Date.now() / 1000) + 3600);
-  const nonce = 1n;
-  const body = buildSubscribeBody({
-    paymentId,
-    subscriber: deployerWallet.address,
-    referrer: referrerWallet.address,
-    amount: GROSS_NANOTON,
-    expiry,
-    nonce,
-    signerSeed: secrets.signerPrivateKeyHex,
-  });
+    const treBefore = await getBalanceNano(treasuryAddr);
+    const contractBefore = await getBalanceNano(contractStr);
 
-  const treBefore = await getBalanceNano(treasuryAddr);
-  const refBefore = await getBalanceNano(referrerAddress);
+    log('Sending 0.1 TON V3.1 smoke subscribe (expect referrer bounce → excess on contract)...');
+    await sendExternalBoc(deployerWallet, deployerKey.secretKey, [
+      internal({ to: contractAddr, value: GROSS_NANOTON, body, bounce: true }),
+    ]);
+    await sleep(25000);
 
-  log('Sending 0.1 TON subscribe payment...');
-  await sendExternalBoc(deployerWallet, deployerKey.secretKey, [
-    internal({ to: contractAddr, value: GROSS_NANOTON, body, bounce: true }),
-  ]);
-  await sleep(20000);
+    const treAfter = await getBalanceNano(treasuryAddr);
+    const contractAfter = await getBalanceNano(contractStr);
+    const paymentTxs = await toncenter('getTransactions', { address: contractStr, limit: 5 });
+    const paymentTxHash = paymentTxs?.[0]?.transaction_id?.hash || null;
 
-  const treAfter = await getBalanceNano(treasuryAddr);
-  const refAfter = await getBalanceNano(referrerAddress);
-  const paymentTxs = await toncenter('getTransactions', { address: contractStr, limit: 5 });
-  const paymentTxHash = paymentTxs?.[0]?.transaction_id?.hash || null;
+    const processed = await toncenter('runGetMethod', {
+      address: contractStr,
+      method: 'get_payment_processed',
+      stack: [['num', '0x' + paymentId.toString(16)]],
+    });
 
-  const processed = await toncenter('runGetMethod', {
-    address: contractStr,
-    method: 'get_payment_processed',
-    stack: [['num', paymentId.toString()]],
-  });
-
-  const report = {
-    status: 'DEPLOYED',
-    network: 'testnet',
-    version: 'v2-router',
-    contractAddress: contractStr,
-    deployTxHash,
-    treasuryAddress: treasuryAddr,
-    signerPublicKeyHex: secrets.signerPublicKeyHex,
-    deployerAddress: deployerAddr,
-    feePolicy: 'RAWRESERVE execution + GETFORWARDFEE ×2; 50/50 distributable; odd nanotons → treasury',
-    paymentTest: {
+    paymentTest = {
       paymentId: paymentId.toString(),
       grossNanoton: GROSS_NANOTON.toString(),
-      referrerBalanceDelta: (refAfter - refBefore).toString(),
+      commissionAuth: '1',
       treasuryBalanceDelta: (treAfter - treBefore).toString(),
+      contractBalanceDelta: (contractAfter - contractBefore).toString(),
+      note: 'Uninit referrer → bounce expected; excess remains for sweep_excess',
       processedExitCode: processed.exit_code,
       processedValue: processed.stack?.[0]?.[1],
       txHash: paymentTxHash,
       explorer: paymentTxHash ? explorerTx(paymentTxHash) : null,
-    },
+      outs: (paymentTxs?.[0]?.out_msgs || []).map((o) => ({
+        dest: o.destination,
+        value: o.value,
+        bounced: o.bounced,
+      })),
+    };
+  } else if (skipSmoke) {
+    log('Skipping smoke payment (TON_DEPLOY_SKIP_SMOKE=1)');
+  }
+
+  const report = {
+    status: 'DEPLOYED',
+    network: 'testnet',
+    version: 'v3.1-net-50-50',
+    contractAddress: contractStr,
+    deployTxHash,
+    localCodeHash,
+    onchainCodeHash,
+    codeMatchesBuild,
+    preservedOldV3: '0QB0YFU64VFWC5H7cgvVUSxmuS8FOB5JGPEYpzZBhRUUZEj4',
+    treasuryAddress: treasuryAddr,
+    signerPublicKeyHex: secrets.signerPublicKeyHex,
+    deployerAddress: deployerAddr,
+    feePolicy:
+      'RAWRESERVE(exec) + GETFORWARDFEE×N; commission>0 → 50/50 of net (odd nano → treasury); unused reserve stays on contract',
+    paymentTest,
     explorers: {
       contract: explorerAddr(contractStr),
       deployTx: deployTxHash ? explorerTx(deployTxHash) : null,

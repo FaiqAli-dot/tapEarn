@@ -425,10 +425,17 @@ class ApiService {
     return this.request(`/payments/${paymentId}`);
   }
 
-  async submitPaymentTx(paymentId: string, inboundTxHash: string) {
+  async submitPaymentTx(
+    paymentId: string,
+    inboundTxHash: string,
+    options: { inboundBoc?: string } = {}
+  ) {
     return this.request(`/payments/${paymentId}/submit`, {
       method: 'POST',
-      body: JSON.stringify({ inboundTxHash }),
+      body: JSON.stringify({
+        inboundTxHash,
+        inboundBoc: options.inboundBoc,
+      }),
     });
   }
 

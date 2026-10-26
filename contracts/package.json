@@ -6,6 +6,8 @@
   "scripts": {
     "build": "node scripts/compile.js",
     "deploy": "node scripts/deploy-testnet.js",
+    "deploy:from-secrets": "node scripts/deploy-from-secrets.js",
+    "wallets:generate": "node scripts/generate-testnet-wallets.js",
     "pretest": "npm run build",
     "test": "node --test tests/*.test.js",
     "test:split": "node --test tests/split.test.js"

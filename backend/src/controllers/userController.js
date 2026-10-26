@@ -162,6 +162,16 @@ const getUserGameState = async (telegramId) => {
     walletAddress: user.walletAddress,
     walletVerified: user.walletVerified,
     walletVerifiedAt: user.walletVerifiedAt,
+    tonSubscription: {
+      active: Boolean(
+        user.tonSubscriptionActive &&
+          user.tonSubscriptionExpiresAt &&
+          new Date(user.tonSubscriptionExpiresAt) > new Date()
+      ),
+      expiresAt: user.tonSubscriptionExpiresAt || null,
+      activatedAt: user.tonSubscriptionActivatedAt || null,
+      firstCommissionConsumed: Boolean(user.tonFirstCommissionConsumed)
+    },
     engagement: {
       quests: questStatus,
       xp,

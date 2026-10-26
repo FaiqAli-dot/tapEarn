@@ -37,7 +37,7 @@ export function getSignerPublicKeyHex() {
  */
 export function buildAuthorizationPayload(payment) {
   return {
-    v: 2,
+    v: 3,
     paymentId: String(payment._id),
     paymentIdUint256: payment.paymentIdUint256,
     subscriberWallet: payment.subscriberWallet,
@@ -49,6 +49,8 @@ export function buildAuthorizationPayload(payment) {
     netAmountNanoton: payment.netAmountNanoton,
     referrerShareNanoton: payment.referrerShareNanoton,
     treasuryShareNanoton: payment.treasuryShareNanoton,
+    commissionNanoton: payment.referrerShareNanoton || '0',
+    isFirstPayment: Boolean(payment.isFirstPayment),
     authorizationNonce: payment.authorizationNonce,
     contractAddress: payment.contractAddress,
     network: payment.network,

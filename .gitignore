@@ -224,3 +224,7 @@ local/
 contracts/.deploy-secrets.json
 contracts/deploy-report.json
 contracts/node_modules/
+.secrets/
+**/.secrets/
+docs/ton-subscription-e2e-results.local.json
+backend/.env.testnet.local

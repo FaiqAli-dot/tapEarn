@@ -34,6 +34,14 @@ export interface GameState {
   walletAddress?: string
   walletVerified?: boolean
   walletVerifiedAt?: string
+
+  // TON subscription (server-authoritative; never set from frontend alone)
+  tonSubscription?: {
+    active: boolean
+    expiresAt?: string | null
+    activatedAt?: string | null
+    firstCommissionConsumed?: boolean
+  }
 }
 
 export interface DailyTask {

@@ -39,6 +39,8 @@ const paymentSchema = new mongoose.Schema({
   netAmountNanoton: { type: String, default: null },
   referrerShareNanoton: { type: String, default: null },
   treasuryShareNanoton: { type: String, default: null },
+  /** Signed auth eligibility flag (\"1\" / \"0\"); payout amounts come from on-chain net. */
+  commissionAuthNanoton: { type: String, default: null },
   subscriberWallet: { type: String, default: null },
   referrerId: { type: String, default: null },
   referrerWallet: { type: String, default: null },
@@ -54,10 +56,22 @@ const paymentSchema = new mongoose.Schema({
   expiresAt: { type: Date, default: null },
   failureReason: { type: String, default: null },
   confirmedAt: { type: Date, default: null },
+  /** Client-submitted BOC when TON Connect did not return a chain tx hash. */
+  inboundBoc: { type: String, default: null },
+  /** Subscription period granted after CONFIRMED (ms epoch bounds). */
+  subscriptionStartsAt: { type: Date, default: null },
+  subscriptionExpiresAt: { type: Date, default: null },
+  settlementNotes: { type: String, default: null },
+  reconciliationAttempts: { type: Number, default: 0 },
 
   createdAt: { type: Date, default: Date.now },
   updatedAt: { type: Date, default: Date.now }
 });
+
+paymentSchema.index(
+  { userId: 1, paymentKind: 1, status: 1 },
+  { name: 'user_kind_status' }
+);
 
 paymentSchema.pre('save', function saveTimestamp(next) {
   this.updatedAt = new Date();
