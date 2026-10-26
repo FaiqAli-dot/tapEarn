@@ -32,6 +32,9 @@ const int OUT_MSG_CELLS = 1;
 ;; Execution reserve: signature verify + dict write
 const int EXEC_BASE_GAS = 4000000;
 const int EXEC_DICT_OP = 3500000;
+;; Extra headroom so mode-1 sends remain funded after compute gas is charged
+;; (my_balance is pre-gas; action phase sees balance − gas_fees).
+const int GAS_ACTION_HEADROOM = 1500000;
 
 global slice treasury_addr;
 global int signer_pubkey;
@@ -61,6 +64,19 @@ global cell processed_dict;
         .end_cell();
     ;; mode 1 = pay forward fees from remaining balance after RAWRESERVE
     send_raw_message(msg, 1);
+}
+
+;; Carry all remaining balance (after RAWRESERVE) to dest. Used by sweep_excess so
+;; compute gas cannot cause mode-1 underfunding of a precomputed sendable amount.
+() send_remaining_bounceable(slice dest) impure inline {
+    var msg = begin_cell()
+        .store_uint(0x18, 6)
+        .store_slice(dest)
+        .store_coins(0)
+        .store_uint(0, 1 + 4 + 4 + 64 + 32 + 1 + 1)
+        .end_cell();
+    ;; mode 128 = carry all remaining balance except reserved
+    send_raw_message(msg, 128);
 }
 
 () recv_internal(int my_balance, int msg_value, cell in_msg_full, slice in_msg_body) impure {
@@ -106,15 +122,15 @@ global cell processed_dict;
             .end_cell();
         throw_unless(error::bad_signature, check_signature(cell_hash(auth_cell), signature, signer_pubkey));
 
-        int fwd_fee = get_fwd_fee(OUT_MSG_CELLS, OUT_MSG_BITS, 0);
         int execution_reserve = EXEC_BASE_GAS + EXEC_DICT_OP;
-        raw_reserve(execution_reserve + min_leave, 0);
-        int sendable = my_balance - execution_reserve - min_leave - fwd_fee;
-        throw_unless(error::nothing_to_sweep, sendable > 0);
+        ;; Keep min_leave + exec on contract; send ALL remaining via mode 128 (avoids gas underfund).
+        int leave = execution_reserve + min_leave + GAS_ACTION_HEADROOM;
+        throw_unless(error::nothing_to_sweep, my_balance > leave);
 
         processed_dict~udict_set(256, sweep_id, begin_cell().store_uint(1, 1).end_cell().begin_parse());
         save_data();
-        send_empty_bounceable(treasury_addr, sendable);
+        raw_reserve(leave, 0);
+        send_remaining_bounceable(treasury_addr);
         return ();
     }
 

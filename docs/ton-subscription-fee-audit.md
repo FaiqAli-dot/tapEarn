@@ -114,7 +114,7 @@ To implement **50/50 of net after defined on-chain costs** safely:
 4. Off-chain quotes remain **estimates** only; confirmation must use observed outs.
 5. Unused reserve stays on contract (sweepable) — never silently discarded to nowhere, never promised as subscriber refund unless a future explicit refund op is designed.
 
-**Deploy note:** This changes on-chain payout math vs the live V3 contract → a **new testnet deploy is required** after owner approval. Do not redeploy in this task.
+**Deploy note:** Owner approved testnet redeploy. Active fee-aware router: `0QArUl48x88i_NjfNbHTpPY2RZy5fEJZcbBltu6PPWQllvkH` (V3.1.2). Old V3 `0QB0YFU64VFWC5H7cgvVUSxmuS8FOB5JGPEYpzZBhRUUZEj4` preserved. See `docs/ton-subscription-testnet.md`.
 
 ---
 

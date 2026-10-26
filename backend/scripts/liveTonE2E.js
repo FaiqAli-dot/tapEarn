@@ -294,15 +294,57 @@ async function main() {
     const user = await User.findOne({ telegramId: '900002' });
     const payout = await ReferralTonPayout.findOne({ paymentId: payment.id });
 
+    // Fee-aware: referred outs must be 50/50 of net (differ by ≤1 nanoTON)
+    const outs = (onchain.outMsgs || []).map((o) => ({
+      dest: o.destination,
+      value: String(o.value),
+      bounced: Boolean(o.bounced),
+    }));
+    const values = outs
+      .filter((o) => !o.bounced)
+      .map((o) => BigInt(o.value || 0))
+      .filter((v) => v > 0n)
+      .sort((a, b) => (a < b ? -1 : a > b ? 1 : 0));
+    let balanced50_50 = false;
+    let refOut = null;
+    let treOut = null;
+    if (values.length >= 2) {
+      // Match by destination when possible
+      const refRaw = Address.parse(refA.address).toRawString();
+      const treRaw = Address.parse(secrets.wallets.treasury.address).toRawString();
+      for (const o of outs) {
+        try {
+          const d = Address.parse(o.dest).toRawString();
+          if (d === refRaw) refOut = BigInt(o.value);
+          if (d === treRaw) treOut = BigInt(o.value);
+        } catch {
+          /* ignore */
+        }
+      }
+      if (refOut != null && treOut != null) {
+        const diff = treOut >= refOut ? treOut - refOut : refOut - treOut;
+        balanced50_50 = diff <= 1n && refOut > 0n;
+      }
+    }
+
+    const confirmed =
+      final?.payment?.status === 'CONFIRMED' && user?.tonSubscriptionActive && payout && balanced50_50;
+
     results.scenarios.A = {
-      result:
-        final?.payment?.status === 'CONFIRMED' && user?.tonSubscriptionActive && payout
-          ? 'PASS'
-          : 'FAIL',
+      result: confirmed ? 'PASS' : 'FAIL',
       paymentId: payment.id,
       inboundTxHash: onchain.hash,
       explorer: `https://testnet.tonscan.org/tx/${encodeURIComponent(onchain.hash)}`,
-      commissionNanoton: payment.referrerShareNanoton,
+      estimatedReferrerShareNanoton: payment.referrerShareNanoton,
+      settledReferrerShareNanoton: final?.payment?.referrerShareNanoton || refOut?.toString() || null,
+      settledTreasuryShareNanoton: final?.payment?.treasuryShareNanoton || treOut?.toString() || null,
+      settledNetNanoton:
+        refOut != null && treOut != null ? (refOut + treOut).toString() : final?.payment?.netAmountNanoton,
+      outDiffNanoton:
+        refOut != null && treOut != null
+          ? (treOut >= refOut ? treOut - refOut : refOut - treOut).toString()
+          : null,
+      balanced50_50,
       treasuryDelta: (treAfter - treBefore).toString(),
       referrerDelta: (refAfter - refBefore).toString(),
       subscriptionActive: Boolean(user?.tonSubscriptionActive),
@@ -310,8 +352,21 @@ async function main() {
       status: final?.payment?.status,
       failureReason: final?.payment?.failureReason,
       submitStatus: submit.body?.payment?.status,
-      outs: onchain.outMsgs?.map((o) => ({ dest: o.destination, value: o.value })),
+      outs,
       payoutStatus: payout?.status || null,
+    };
+
+    results.feeScenarios = results.feeScenarios || {};
+    results.feeScenarios.referred_50_50_of_net = {
+      result: balanced50_50 && confirmed ? 'PASS' : 'FAIL',
+      inboundTxHash: onchain.hash,
+      referrerOutNanoton: refOut?.toString() || null,
+      treasuryOutNanoton: treOut?.toString() || null,
+      diffNanoton:
+        refOut != null && treOut != null
+          ? (treOut >= refOut ? treOut - refOut : refOut - treOut).toString()
+          : null,
+      note: 'Referred first purchase: on-chain outs must differ by ≤1 nanoTON',
     };
   } catch (e) {
     results.scenarios.A = { result: 'FAIL', error: e.message, stack: e.stack?.split('\n').slice(0, 4) };
@@ -355,6 +410,20 @@ async function main() {
 
   // --- Scenario C: renewal (use subscriberRenewal as B-like with referrer, pay twice) ---
   try {
+    const renBal = await bal(subRen.address);
+    const needC = 220_000_000n; // two 0.1 payments + wallet gas
+    if (renBal < needC) {
+      results.scenarios.C = {
+        result: 'BLOCKED',
+        error: 'insufficient_subscriberRenewal_balance',
+        address: subRen.address,
+        balanceNanoton: renBal.toString(),
+        requiredNanoton: needC.toString(),
+        shortfallNanoton: (needC - renBal).toString(),
+        note: 'Fund subscriberRenewal, then re-run scenario C',
+      };
+      console.log('C', results.scenarios.C.result, results.scenarios.C.shortfallNanoton);
+    } else {
     const referrer = await ensureUser('900004', {});
     await bindWallet('900004', refA.address);
     await ensureUser('900005', { referrerId: '900004', referredBy: referrer.referralCode });
@@ -404,6 +473,7 @@ async function main() {
       expiryExtended: afterSecond.tonSubscriptionExpiresAt.getTime() > exp1,
       commissionPayoutCount: payoutCount2,
     };
+    } // end sufficient-balance branch
   } catch (e) {
     results.scenarios.C = { result: 'FAIL', error: e.message };
   }
@@ -612,6 +682,35 @@ async function main() {
   }
   console.log('G', results.scenarios.G.result);
 
+  // --- Fee scenarios (derived from A–D + explicit notes) ---
+  results.feeScenarios = results.feeScenarios || {};
+  results.feeScenarios.no_referrer_treasury_net = {
+    result: results.scenarios.B?.result === 'PASS' ? 'PASS' : 'FAIL',
+    inboundTxHash: results.scenarios.B?.inboundTxHash || null,
+    treasuryDelta: results.scenarios.B?.treasuryDelta || null,
+    note: 'No referrer: full distributable to treasury',
+  };
+  results.feeScenarios.renewal_no_commission = {
+    result: results.scenarios.C?.result === 'PASS' ? 'PASS' : 'FAIL',
+    renewalTx: results.scenarios.C?.renewalTx || null,
+    referrerDeltaRenewal: results.scenarios.C?.referrerDeltaRenewal || null,
+    note: 'Renewal pays no commission',
+  };
+  results.feeScenarios.underpay_rejected = {
+    result: results.scenarios.D?.checks?.underpaymentRejected ? 'PASS' : 'FAIL',
+    txHash: results.scenarios.D?.underpaymentTx || null,
+    exitCode: results.scenarios.D?.underpaymentExit ?? null,
+  };
+  results.feeScenarios.replay_rejected = {
+    result: results.scenarios.D?.checks?.replayRejected ? 'PASS' : 'FAIL',
+    txHash: results.scenarios.D?.replayTx || null,
+    exitCode: results.scenarios.D?.replayExit ?? null,
+  };
+  results.feeScenarios.mini_app_ui = {
+    result: 'NOT RUN',
+    note: 'Telegram Mini App / TON Connect WebView not exercised in this environment',
+  };
+
   results.finishedAt = new Date().toISOString();
   results.balances = {
     deployer: (await bal(secrets.wallets.deployer.address)).toString(),
@@ -621,10 +720,24 @@ async function main() {
     subscriberNoRef: (await bal(subNo.address)).toString(),
     subscriberRenewal: (await bal(subRen.address)).toString(),
     contract: (await bal(CONTRACT)).toString(),
+    oldV3Preserved: (await bal('0QB0YFU64VFWC5H7cgvVUSxmuS8FOB5JGPEYpzZBhRUUZEj4')).toString(),
   };
 
   writeFileSync(OUT, JSON.stringify(results, null, 2));
-  console.log(JSON.stringify({ summary: Object.fromEntries(Object.entries(results.scenarios).map(([k,v])=>[k,v.result])), balances: results.balances, out: OUT }, null, 2));
+  console.log(
+    JSON.stringify(
+      {
+        summary: Object.fromEntries(Object.entries(results.scenarios).map(([k, v]) => [k, v.result])),
+        feeScenarios: Object.fromEntries(
+          Object.entries(results.feeScenarios || {}).map(([k, v]) => [k, v.result])
+        ),
+        balances: results.balances,
+        out: OUT,
+      },
+      null,
+      2
+    )
+  );
 
   await mongoose.disconnect();
   await memory.stop();
